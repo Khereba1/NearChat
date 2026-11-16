@@ -27,7 +27,6 @@ jobs:
         with:
           packages: 'platforms;android-35 build-tools;35.0.0'
 
-      # Gradle is installed here instead of relying on gradle-wrapper.jar (the project has no wrapper)
       - name: Install Gradle 8.10.2
         run: |
           wget -q https://services.gradle.org/distributions/gradle-8.10.2-bin.zip -O "$RUNNER_TEMP/gradle.zip"
@@ -41,7 +40,14 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      # Stable signing key from GitHub Secrets (see setup_signing.sh). Without it a temporary key is used
+      - name: Download hev-socks5-tunnel AAR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p app/libs
+          gh release download 2.20.0 -R heiher/hev-socks5-tunnel -p "*.aar" -D app/libs
+          ls -la app/libs
+
       - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -68,7 +74,6 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
-      # Stable download link for the phone: the Releases page (tag "latest")
       - name: Publish to Releases
         continue-on-error: true
         env:

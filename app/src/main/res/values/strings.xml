@@ -87,4 +87,8 @@
     <string name="router_hw_note">Note: On older single-chip devices without root, Android cannot broadcast a new Wi-Fi while already connected to Wi-Fi, so Wi-Fi Direct may fail; the Proxy still works over USB/Hotspot/LAN.</string>
     <string name="router_custom_pass">Fixed Password (8+ chars)</string>
     <string name="router_reset_group">Stop &amp; Reset Wi-Fi Group</string>
+    <string name="vpn_client_section">Client Mode (Receive Internet on 2nd Phone)</string>
+    <string name="vpn_host_ip">Host IP (default 192.168.49.1)</string>
+    <string name="vpn_connect">Connect All Apps (VPN)</string>
+    <string name="vpn_disconnect">Disconnect VPN</string>
 </resources>

@@ -19,7 +19,10 @@ import kotlinx.coroutines.flow.StateFlow
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
@@ -266,20 +269,23 @@ object WifiProxyServer {
         }
     }
 
+    private fun activeInternetNetwork(): Network? {
+        val ctx = appContext ?: return null
+        return try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return null
+            val caps = cm.getNetworkCapabilities(net) ?: return null
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) net else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun openInternetSocket(host: String, port: Int): Socket {
-        val ctx = appContext
-        val sock = if (ctx != null) {
+        val net = activeInternetNetwork()
+        val sock = if (net != null) {
             try {
-                val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                val activeNet: Network? = cm.activeNetwork
-                val caps = if (activeNet != null) cm.getNetworkCapabilities(activeNet) else null
-                if (activeNet != null && caps != null &&
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                ) {
-                    activeNet.socketFactory.createSocket(host, port)
-                } else {
-                    Socket(host, port)
-                }
+                net.socketFactory.createSocket(host, port)
             } catch (_: Throwable) {
                 Socket(host, port)
             }
@@ -288,6 +294,16 @@ object WifiProxyServer {
         }
         tuneSocket(sock)
         return sock
+    }
+
+    private fun openInternetDatagramSocket(): DatagramSocket {
+        val ds = DatagramSocket(0)
+        ds.soTimeout = 60_000
+        try {
+            activeInternetNetwork()?.bindSocket(ds)
+        } catch (_: Throwable) {
+        }
+        return ds
     }
 
     private fun handleSocks5Client(client: Socket) {
@@ -309,7 +325,7 @@ object WifiProxyServer {
                 val cmd = inS.read()
                 inS.read()
                 val atyp = inS.read()
-                if (rVer != 0x05 || cmd != 0x01) return
+                if (rVer != 0x05) return
 
                 val host = when (atyp) {
                     0x01 -> {
@@ -336,6 +352,12 @@ object WifiProxyServer {
                 if (p1 < 0 || p2 < 0) return
                 val port = (p1 shl 8) or p2
 
+                if (cmd == 0x03) {
+                    handleSocks5UdpAssociate(c, inS, outS)
+                    return
+                }
+                if (cmd != 0x01) return
+
                 openInternetSocket(host, port).use { remote ->
                     outS.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                     outS.flush()
@@ -346,6 +368,101 @@ object WifiProxyServer {
                 }
             } catch (_: Throwable) {
             }
+        }
+    }
+
+    private fun handleSocks5UdpAssociate(ctrl: Socket, inS: InputStream, outS: OutputStream) {
+        val localUdp = DatagramSocket(0, InetAddress.getByName("0.0.0.0")).apply {
+            soTimeout = 120_000
+        }
+        val outUdp = openInternetDatagramSocket()
+        try {
+            val bindPort = localUdp.localPort
+            val localIpBytes = ctrl.localAddress.address.let {
+                if (it.size == 4) it else byteArrayOf(192.toByte(), 168.toByte(), 49, 1)
+            }
+            outS.write(
+                byteArrayOf(
+                    0x05, 0x00, 0x00, 0x01,
+                    localIpBytes[0], localIpBytes[1], localIpBytes[2], localIpBytes[3],
+                    ((bindPort shr 8) and 0xFF).toByte(), (bindPort and 0xFF).toByte()
+                )
+            )
+            outS.flush()
+
+            var clientAddr: InetSocketAddress? = null
+            val relayActive = AtomicBoolean(true)
+
+            val replyThread = Thread {
+                val rBuf = ByteArray(4096)
+                while (relayActive.get()) {
+                    try {
+                        val rp = DatagramPacket(rBuf, rBuf.size)
+                        outUdp.receive(rp)
+                        val cTarget = clientAddr ?: continue
+                        val srcIp = rp.address.address
+                        if (srcIp.size != 4) continue
+                        val wrapped = ByteArray(10 + rp.length)
+                        wrapped[0] = 0; wrapped[1] = 0; wrapped[2] = 0; wrapped[3] = 0x01
+                        System.arraycopy(srcIp, 0, wrapped, 4, 4)
+                        wrapped[8] = ((rp.port shr 8) and 0xFF).toByte()
+                        wrapped[9] = (rp.port and 0xFF).toByte()
+                        System.arraycopy(rp.data, rp.offset, wrapped, 10, rp.length)
+                        localUdp.send(DatagramPacket(wrapped, wrapped.size, cTarget))
+                    } catch (_: Throwable) {
+                        if (!relayActive.get()) break
+                    }
+                }
+            }
+            replyThread.start()
+
+            val ctrlMonitor = Thread {
+                try {
+                    while (inS.read() != -1) { /* keep watching TCP control socket */ }
+                } catch (_: Throwable) {
+                } finally {
+                    relayActive.set(false)
+                    try { localUdp.close() } catch (_: Throwable) {}
+                    try { outUdp.close() } catch (_: Throwable) {}
+                }
+            }
+            ctrlMonitor.start()
+
+            val buf = ByteArray(4096)
+            while (relayActive.get()) {
+                val pkt = DatagramPacket(buf, buf.size)
+                localUdp.receive(pkt)
+                clientAddr = InetSocketAddress(pkt.address, pkt.port)
+                val len = pkt.length
+                if (len < 10) continue
+                val atyp = buf[3].toInt() and 0xFF
+                var offset = 4
+                val dstAddr: InetAddress = when (atyp) {
+                    0x01 -> {
+                        if (len < 10) continue
+                        val b = buf.copyOfRange(4, 8)
+                        offset = 8
+                        InetAddress.getByAddress(b)
+                    }
+                    0x03 -> {
+                        val dLen = buf[4].toInt() and 0xFF
+                        if (len < 5 + dLen + 2) continue
+                        val domain = String(buf, 5, dLen, StandardCharsets.UTF_8)
+                        offset = 5 + dLen
+                        InetAddress.getByName(domain)
+                    }
+                    else -> continue
+                }
+                val dstPort = ((buf[offset].toInt() and 0xFF) shl 8) or (buf[offset + 1].toInt() and 0xFF)
+                offset += 2
+                val payloadLen = len - offset
+                if (payloadLen <= 0) continue
+                outUdp.send(DatagramPacket(buf, offset, payloadLen, dstAddr, dstPort))
+            }
+        } catch (_: Throwable) {
+        } finally {
+            try { localUdp.close() } catch (_: Throwable) {}
+            try { outUdp.close() } catch (_: Throwable) {}
         }
     }
 

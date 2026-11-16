@@ -83,4 +83,8 @@
     <string name="router_hw_note">ملحوظة: الأجهزة القديمة بشريحة واي فاي واحدة بدون روت مبتقدرش تبث واي فاي جديد وهي متصلة بواي فاي تاني، لكن البروكسي يشتغل على الشبكة أو USB.</string>
     <string name="router_custom_pass">كلمة سر ثابتة (8 أحرف فأكثر)</string>
     <string name="router_reset_group">إيقاف وإعادة تعيين الشبكة</string>
+    <string name="vpn_client_section">وضع المستقبل (تشغيل كل التطبيقات على الموبايل التاني)</string>
+    <string name="vpn_host_ip">عنوان الجهاز المضيف (الافتراضي 192.168.49.1)</string>
+    <string name="vpn_connect">تشغيل الإنترنت لكل التطبيقات (VPN)</string>
+    <string name="vpn_disconnect">إيقاف الـ VPN</string>
 </resources>

@@ -13,8 +13,8 @@ android {
         applicationId = "com.khereba1.nearchat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.2.6"
+        versionCode = 11
+        versionName = "1.3.0"
     }
 
     signingConfigs {
@@ -60,6 +60,7 @@ android {
 }
 
 dependencies {
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")

@@ -1,7 +1,11 @@
 package com.khereba1.app.ui
 
+import android.app.Activity
 import android.content.Context
+import android.net.VpnService
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,8 +20,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Router
+import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -27,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.khereba1.app.PREFS
 import com.khereba1.app.R
+import com.khereba1.app.network.NearChatVpnService
 import com.khereba1.app.network.RouterBridgeState
 import com.khereba1.app.network.WifiProxyServer
 
@@ -53,6 +61,18 @@ fun RouterBridgeDialog(
     val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     var customPass by remember {
         mutableStateOf(prefs.getString("router_pass", "NearChat123") ?: "NearChat123")
+    }
+    var clientHostIp by remember {
+        mutableStateOf(prefs.getString("vpn_host_ip", "192.168.49.1") ?: "192.168.49.1")
+    }
+    val isVpnRunning by NearChatVpnService.isRunning.collectAsState()
+
+    val vpnPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, 1080)
+        }
     }
 
     AlertDialog(
@@ -114,7 +134,7 @@ fun RouterBridgeDialog(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "SOCKS5 (Telegram / SocksDroid VPN):",
+                                        text = "SOCKS5 (Telegram / Client VPN):",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -176,11 +196,47 @@ fun RouterBridgeDialog(
                     }
                 }
 
+                HorizontalDivider()
+
                 Text(
-                    text = stringResource(R.string.router_hw_note),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = stringResource(R.string.vpn_client_section),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
                 )
+                if (!isVpnRunning) {
+                    OutlinedTextField(
+                        value = clientHostIp,
+                        onValueChange = {
+                            clientHostIp = it
+                            prefs.edit().putString("vpn_host_ip", it).apply()
+                        },
+                        label = { Text(stringResource(R.string.vpn_host_ip)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Button(
+                        onClick = {
+                            val prep = VpnService.prepare(context)
+                            if (prep != null) {
+                                vpnPermLauncher.launch(prep)
+                            } else {
+                                NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, 1080)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.VpnKey, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.vpn_connect))
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { NearChatVpnService.stop(context) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.vpn_disconnect))
+                    }
+                }
             }
         },
         confirmButton = {
