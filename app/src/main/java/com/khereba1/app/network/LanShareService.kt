@@ -48,6 +48,7 @@ class LanShareService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            WifiProxyServer.stop(keepGroup = true)
             stopSelf()
             return START_NOT_STICKY
         }

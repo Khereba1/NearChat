@@ -5,11 +5,13 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import com.khereba1.app.AppLog
 import com.khereba1.app.PREFS
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,31 +45,41 @@ object WifiProxyServer {
     private var p2pChannel: WifiP2pManager.Channel? = null
     private var p2pManager: WifiP2pManager? = null
     private var appContext: Context? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _state = MutableStateFlow(RouterBridgeState())
     val state: StateFlow<RouterBridgeState> = _state
 
-    @SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission", "WakelockTimeout")
     fun start(context: Context, preferredPort: Int = 8899, preferredSocksPort: Int = 1080) {
         if (running.get()) return
-        appContext = context.applicationContext
-        val customPass = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val ctx = context.applicationContext
+        appContext = ctx
+        val customPass = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString("router_pass", "NearChat123") ?: "NearChat123"
         try {
             val ss = try {
-                ServerSocket(preferredPort, 50, InetAddress.getByName("0.0.0.0"))
+                ServerSocket(preferredPort, 100, InetAddress.getByName("0.0.0.0"))
             } catch (_: Throwable) {
-                ServerSocket(0, 50, InetAddress.getByName("0.0.0.0"))
+                ServerSocket(0, 100, InetAddress.getByName("0.0.0.0"))
             }
             val socks = try {
-                ServerSocket(preferredSocksPort, 50, InetAddress.getByName("0.0.0.0"))
+                ServerSocket(preferredSocksPort, 100, InetAddress.getByName("0.0.0.0"))
             } catch (_: Throwable) {
-                ServerSocket(0, 50, InetAddress.getByName("0.0.0.0"))
+                ServerSocket(0, 100, InetAddress.getByName("0.0.0.0"))
             }
             serverSocket = ss
             socksSocket = socks
             running.set(true)
+
+            acquireLocks(ctx)
+            try {
+                LanShareService.start(ctx)
+            } catch (_: Throwable) {
+            }
+
             val exec = Executors.newCachedThreadPool()
             pool = exec
             val ip = NetworkUtils.getLocalIpAddress() ?: "192.168.49.1"
@@ -102,10 +114,10 @@ object WifiProxyServer {
             }
 
             try {
-                val mgr = context.applicationContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+                val mgr = ctx.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
                 p2pManager = mgr
                 if (mgr != null) {
-                    val ch = mgr.initialize(context.applicationContext, Looper.getMainLooper(), null)
+                    val ch = mgr.initialize(ctx, Looper.getMainLooper(), null)
                     p2pChannel = ch
                     mgr.requestGroupInfo(ch) { existing ->
                         if (existing != null && !existing.networkName.isNullOrEmpty()) {
@@ -130,6 +142,45 @@ object WifiProxyServer {
             AppLog.log("PROXY", "Proxy start failed", e)
             stop(keepGroup = false)
         }
+    }
+
+    @SuppressLint("WakelockTimeout")
+    private fun acquireLocks(ctx: Context) {
+        try {
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && wakeLock == null) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NearChat:RouterWakeLock").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+            val wm = ctx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wm != null && wifiLock == null) {
+                @Suppress("DEPRECATION")
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wm.createWifiLock(mode, "NearChat:RouterWifiLock").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (e: Throwable) {
+            AppLog.log("PROXY", "Lock acquire error", e)
+        }
+    }
+
+    private fun releaseLocks() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+        } catch (_: Throwable) {}
+        wakeLock = null
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (_: Throwable) {}
+        wifiLock = null
     }
 
     @SuppressLint("MissingPermission")
@@ -186,6 +237,7 @@ object WifiProxyServer {
     fun stop(keepGroup: Boolean = true) {
         running.set(false)
         mainHandler.removeCallbacksAndMessages(null)
+        releaseLocks()
         try { serverSocket?.close() } catch (_: Throwable) {}
         try { socksSocket?.close() } catch (_: Throwable) {}
         serverSocket = null
@@ -205,9 +257,18 @@ object WifiProxyServer {
         _state.value = RouterBridgeState(isRunning = false)
     }
 
+    private fun tuneSocket(s: Socket) {
+        try {
+            s.soTimeout = 120_000
+            s.tcpNoDelay = true
+            s.keepAlive = true
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun openInternetSocket(host: String, port: Int): Socket {
         val ctx = appContext
-        if (ctx != null) {
+        val sock = if (ctx != null) {
             try {
                 val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                 val activeNet: Network? = cm.activeNetwork
@@ -215,18 +276,24 @@ object WifiProxyServer {
                 if (activeNet != null && caps != null &&
                     caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 ) {
-                    return activeNet.socketFactory.createSocket(host, port)
+                    activeNet.socketFactory.createSocket(host, port)
+                } else {
+                    Socket(host, port)
                 }
             } catch (_: Throwable) {
+                Socket(host, port)
             }
+        } else {
+            Socket(host, port)
         }
-        return Socket(host, port)
+        tuneSocket(sock)
+        return sock
     }
 
     private fun handleSocks5Client(client: Socket) {
         client.use { c ->
             try {
-                c.soTimeout = 30_000
+                tuneSocket(c)
                 val inS = c.getInputStream()
                 val outS = c.getOutputStream()
 
@@ -235,13 +302,12 @@ object WifiProxyServer {
                 val nMethods = inS.read()
                 if (nMethods <= 0) return
                 repeat(nMethods) { inS.read() }
-                // Reply: SOCKS5, no authentication
                 outS.write(byteArrayOf(0x05, 0x00))
                 outS.flush()
 
                 val rVer = inS.read()
                 val cmd = inS.read()
-                inS.read() // reserved
+                inS.read()
                 val atyp = inS.read()
                 if (rVer != 0x05 || cmd != 0x01) return
 
@@ -276,7 +342,7 @@ object WifiProxyServer {
                     val t1 = Thread { pipe(inS, remote.getOutputStream()) }
                     t1.start()
                     pipe(remote.getInputStream(), outS)
-                    t1.join(1500)
+                    t1.join(3000)
                 }
             } catch (_: Throwable) {
             }
@@ -295,7 +361,7 @@ object WifiProxyServer {
     private fun handleProxyClient(client: Socket) {
         client.use { c ->
             try {
-                c.soTimeout = 30_000
+                tuneSocket(c)
                 val inStream = c.getInputStream()
                 val outStream = c.getOutputStream()
                 val firstLine = readLine(inStream) ?: return
@@ -324,7 +390,7 @@ object WifiProxyServer {
                         val t1 = Thread { pipe(inStream, remote.getOutputStream()) }
                         t1.start()
                         pipe(remote.getInputStream(), outStream)
-                        t1.join(1500)
+                        t1.join(3000)
                     }
                 } else {
                     val uri = java.net.URI(target)
@@ -342,7 +408,7 @@ object WifiProxyServer {
                         }
                         rOut.write("Connection: close\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
                         if (contentLength > 0) {
-                            val buf = ByteArray(8192)
+                            val buf = ByteArray(16384)
                             var rem = contentLength
                             while (rem > 0) {
                                 val r = inStream.read(buf, 0, minOf(buf.size, rem))
@@ -362,13 +428,13 @@ object WifiProxyServer {
 
     private fun pipe(input: InputStream, output: OutputStream) {
         try {
-            val buf = ByteArray(16384)
+            val buf = ByteArray(65536)
             while (true) {
                 val n = input.read(buf)
                 if (n <= 0) break
                 output.write(buf, 0, n)
-                output.flush()
             }
+            output.flush()
         } catch (_: Throwable) {
         }
     }
