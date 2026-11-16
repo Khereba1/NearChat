@@ -4,10 +4,9 @@ Paste this file together with the project zip when asking an AI to change the ap
 The family-wide rules are in STANDARD.md (ask the owner to attach it if missing).
 
 ## What this is
-Local-first organized chat & media vault (text, voice notes, images, videos, files) with external Share Sheet receiving and per-chat LAN sharing (Viewer or Editor permissions via embedded HTTP server + browser Web UI + native LAN client).
+Local-first organized chat & media vault (text, voice notes, images, videos, files) with external Share Sheet receiving, built-in image/video/audio players, QR-based LAN sharing (Viewer or Editor permissions via embedded HTTP server + browser Web UI + native LAN client), and offline Bluetooth Classic RFCOMM chat (no Wi-Fi needed).
 Android app, Kotlin + Jetpack Compose Material3. Source package `com.khereba1.app`, applicationId `com.khereba1.nearchat`.
 minSdk 29, compileSdk 35. UI languages: English (primary) + Arabic (RTL). Developer name: Khereba1.
-INTERNET / ACCESS_NETWORK_STATE / ACCESS_WIFI_STATE permissions are used ONLY for local LAN/Hotspot sharing (no external internet connections).
 
 ## How it is built (IMPORTANT)
 The owner has only a phone. There is NO local build. Code is pushed from Termux to GitHub and GitHub Actions
@@ -19,18 +18,22 @@ You cannot compile: be careful and conservative. A mistake shows up only as a fa
 
 ## Files (app/src/main/java/com/khereba1/app)
 - `App.kt`: Application entry, `AppLog` crash/error logger, `LocaleHelper`.
-- `MainActivity.kt`: Main Compose host, permissions, external Share Sheet (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`) handler.
+- `MainActivity.kt`: Main Compose host with `AnimatedContent` transitions, permissions, Share Sheet handler, Bluetooth navigation.
 - `data/Models.kt`: `ChatRoom`, `ChatMessage`, `MessageType`, `LanPermission`, `RemoteChatInfo`.
 - `data/NearChatDb.kt`: SQLite database + internal media storage (`filesDir/media/<chatId>/`).
 - `media/VoiceRecorder.kt`: AAC `.m4a` voice note recorder (`MediaRecorder`).
-- `media/AudioPlayerManager.kt`: Inline voice note player (`MediaPlayer`).
+- `media/AudioPlayerManager.kt`: Inline voice note player (`MediaPlayer`) with live progress & seek.
 - `network/NetworkUtils.kt`: Local Wi-Fi/Hotspot IPv4 address lookup.
+- `network/QrGenerator.kt`: QR code bitmap generator (`com.google.zxing:core:3.5.3`).
+- `network/BluetoothChatManager.kt`: Bluetooth Classic RFCOMM server/client for offline chat without Wi-Fi.
 - `network/LanHttpServer.kt`: Embedded HTTP/1.1 server (JSON API, Range media streaming, embedded HTML5 Web UI).
 - `network/LanShareService.kt`: Foreground Service (`dataSync`) keeping LAN server alive.
 - `network/LanClient.kt`: Native HTTP client for joining a host chat from another NearChat app.
 - `ui/theme/Theme.kt`: Material 3 theme & chat accent colors.
-- `ui/HomeScreen.kt`: Chat list, search, create/rename/delete, Join LAN dialog, Settings & AppLog viewer.
-- `ui/ChatScreen.kt`: Chat messages, voice recorder/player, media cards, LAN Share dialog.
+- `ui/HomeScreen.kt`: Telegram-style chat list, search, create/rename/delete, Join LAN, Bluetooth button, Settings.
+- `ui/ChatScreen.kt`: Telegram-style chat bubbles, auto-scroll, voice player, video thumbnails, QR Share dialog.
+- `ui/MediaViewerOverlay.kt`: Full-screen pinch-to-zoom Image Viewer & VideoView Player dialogs.
+- `ui/BluetoothChatScreen.kt`: Real-time Bluetooth chat UI (Host / Connect to Paired Device).
 - `ui/RemoteChatScreen.kt`: Native remote LAN chat screen (Viewer/Editor).
 - `ui/SharePickerDialog.kt`: Chat picker when receiving shared items from other apps.
 

@@ -26,6 +26,7 @@
     <string name="copy">Copy</string>
     <string name="open">Open</string>
     <string name="share">Share</string>
+    <string name="close">Close</string>
     <string name="rename_chat">Rename chat</string>
     <string name="delete_chat_confirm">Delete this chat and all its local files?</string>
     <string name="empty_chat_hint">Send text, voice notes, photos, videos, or files — or share items from other apps into this chat.</string>
@@ -34,13 +35,13 @@
     <string name="mic_permission_needed">Microphone permission is needed to record voice notes.</string>
     <string name="lan_badge">LAN</string>
     <string name="lan_share_title">Share on Local Network</string>
-    <string name="lan_share_desc">Anyone on the same Wi-Fi or Hotspot can open this chat without internet.</string>
+    <string name="lan_share_desc">Anyone on the same Wi-Fi or Hotspot can scan the QR or open the link without internet.</string>
     <string name="lan_enable">Enable LAN sharing for this chat</string>
     <string name="lan_host_url">Local Server Address</string>
-    <string name="lan_viewer_section">Viewer Link (Read &amp; Download only)</string>
-    <string name="lan_editor_section">Editor Link (Post, Edit &amp; Delete)</string>
+    <string name="lan_viewer_section">Viewer (Read &amp; Download)</string>
+    <string name="lan_editor_section">Editor (Post, Edit &amp; Delete)</string>
     <string name="lan_regenerate">Regenerate Links</string>
-    <string name="lan_no_wifi">Connect to Wi-Fi or turn on Hotspot to get a local IP address.</string>
+    <string name="lan_no_wifi">No Wi-Fi detected. Turn on Mobile Hotspot (no data needed) or connect to Wi-Fi.</string>
     <string name="join_lan_chat">Join LAN Chat</string>
     <string name="join_lan_hint">Paste full link (http://192.168…/c/…) or enter Server URL + Code</string>
     <string name="server_url_label">Server URL (e.g. http://192.168.1.5:8765)</string>
@@ -64,5 +65,14 @@
     <string name="uploading">Uploading…</string>
     <string name="connection_error">Could not connect. Make sure both devices are on the same Wi-Fi or Hotspot.</string>
     <string name="me_sender">Me</string>
-    <string name="close">Close</string>
+    <string name="bt_chat_title">Bluetooth Chat (No Wi-Fi)</string>
+    <string name="bt_host_btn">Host Bluetooth Room</string>
+    <string name="bt_connect_btn">Connect to Paired Device</string>
+    <string name="bt_disconnect">Disconnect</string>
+    <string name="bt_waiting">Waiting for Bluetooth connection…</string>
+    <string name="bt_connected">Connected to %1$s</string>
+    <string name="bt_not_supported">Bluetooth is unavailable or turned off.</string>
+    <string name="bt_permission_needed">Bluetooth permission is needed to chat without Wi-Fi.</string>
+    <string name="bt_no_paired">No paired Bluetooth devices found. Pair both phones in Android Settings first.</string>
+    <string name="bt_tip">Works completely offline without Wi-Fi or Hotspot. Pair the two phones in Bluetooth settings, then one taps Host and the other Connects.</string>
 </resources>

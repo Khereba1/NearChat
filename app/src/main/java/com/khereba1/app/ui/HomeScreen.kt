@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
@@ -32,12 +33,11 @@ import androidx.compose.material.icons.rounded.WifiTethering
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -84,6 +84,7 @@ fun HomeScreen(
     onRenameChat: (String, String) -> Unit,
     onDeleteChat: (String) -> Unit,
     onJoinLan: (String, String, String) -> Unit,
+    onOpenBluetoothChat: () -> Unit,
     onChangeLanguage: (String) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -141,6 +142,9 @@ fun HomeScreen(
                             contentDescription = null
                         )
                     }
+                    IconButton(onClick = onOpenBluetoothChat) {
+                        Icon(Icons.Rounded.Bluetooth, contentDescription = stringResource(R.string.bt_chat_title))
+                    }
                     IconButton(onClick = { showJoinDialog = true }) {
                         Icon(Icons.Rounded.Link, contentDescription = stringResource(R.string.join_lan_chat))
                     }
@@ -157,7 +161,8 @@ fun HomeScreen(
             FloatingActionButton(
                 onClick = { showCreateDialog = true },
                 containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = CircleShape
             ) {
                 Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.new_chat))
             }
@@ -196,15 +201,19 @@ fun HomeScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .background(MaterialTheme.colorScheme.surface)
             ) {
                 items(filtered, key = { it.id }) { room ->
                     ChatRowItem(
+                        modifier = Modifier.animateItem(),
                         room = room,
                         onClick = { onOpenChat(room) },
                         onRename = { renameTarget = room },
                         onDelete = { deleteTarget = room }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 76.dp, end = 16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                     )
                 }
             }
@@ -285,6 +294,7 @@ fun HomeScreen(
 
 @Composable
 private fun ChatRowItem(
+    modifier: Modifier = Modifier,
     room: ChatRoom,
     onClick: () -> Unit,
     onRename: () -> Unit,
@@ -293,77 +303,91 @@ private fun ChatRowItem(
     var menuExpanded by remember { mutableStateOf(false) }
     val accent = ChatAccentColors[room.colorIndex.mod(ChatAccentColors.size)]
     val timeText = remember(room.updatedAt) {
-        SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(room.updatedAt))
+        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(room.updatedAt))
     }
 
-    Card(
-        modifier = Modifier
+    Row(
+        modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(16.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(accent),
+            contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(CircleShape)
-                    .background(accent),
-                contentAlignment = Alignment.Center
-            ) {
+            Text(
+                text = room.title.take(1).uppercase(),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleLarge
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = room.title.take(1).uppercase(),
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium
+                    text = room.title,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = room.title,
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                if (room.isLanShared) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Rounded.WifiTethering,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
                     )
-                    if (room.isLanShared) {
-                        Spacer(Modifier.width(6.dp))
-                        Icon(
-                            Icons.Rounded.WifiTethering,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
+                }
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = room.lastPreview.ifEmpty {
+                    stringResource(R.string.items_count, room.messageCount)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = timeText,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (room.messageCount > 0) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Text(
+                            text = room.messageCount.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                         )
                     }
                 }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = room.lastPreview.ifEmpty {
-                        stringResource(R.string.items_count, room.messageCount)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = timeText,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 Box {
-                    IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Rounded.MoreVert, contentDescription = null, modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            Icons.Rounded.MoreVert,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                     DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                         DropdownMenuItem(

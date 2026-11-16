@@ -12,6 +12,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -26,8 +33,10 @@ import com.khereba1.app.data.NearChatDb
 import com.khereba1.app.data.RemoteChatInfo
 import com.khereba1.app.media.AudioPlayerManager
 import com.khereba1.app.media.VoiceRecorder
+import com.khereba1.app.network.BluetoothChatManager
 import com.khereba1.app.network.LanClient
 import com.khereba1.app.network.LanShareService
+import com.khereba1.app.ui.BluetoothChatScreen
 import com.khereba1.app.ui.ChatScreen
 import com.khereba1.app.ui.HomeScreen
 import com.khereba1.app.ui.RemoteChatScreen
@@ -43,6 +52,13 @@ private data class PendingShare(
     val uris: List<Uri> = emptyList()
 )
 
+private sealed interface NavRoute {
+    data object Home : NavRoute
+    data class LocalChat(val chatId: String) : NavRoute
+    data class RemoteChat(val info: RemoteChatInfo, val displayName: String) : NavRoute
+    data object BluetoothChat : NavRoute
+}
+
 class MainActivity : ComponentActivity() {
     private val pendingShareState = mutableStateOf<PendingShare?>(null)
 
@@ -56,18 +72,21 @@ class MainActivity : ComponentActivity() {
 
         val db = NearChatDb.get(this)
         val recorder = VoiceRecorder(this)
+        val btManager = BluetoothChatManager(this)
 
         setContent {
             NearChatTheme {
                 val scope = rememberCoroutineScope()
                 val dbVersion by db.changes.collectAsState()
                 val lanState by LanShareService.state.collectAsState()
+                val btState by btManager.state.collectAsState()
 
                 val chats = remember(dbVersion) { db.getAllChats() }
                 val storageBytes = remember(dbVersion) { db.getTotalStorageBytes() }
 
                 var activeChatId by remember { mutableStateOf<String?>(null) }
                 var remoteSession by remember { mutableStateOf<Pair<RemoteChatInfo, String>?>(null) }
+                var showBluetooth by remember { mutableStateOf(false) }
                 var isRecording by remember { mutableStateOf(false) }
 
                 val prefs = remember { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
@@ -90,6 +109,16 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission()
                 ) { _ -> }
 
+                val btPermLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { results ->
+                    if (results.values.all { it }) {
+                        showBluetooth = true
+                    } else {
+                        Toast.makeText(this, getString(R.string.bt_permission_needed), Toast.LENGTH_SHORT).show()
+                    }
+                }
+
                 val attachmentPicker = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenMultipleDocuments()
                 ) { uris ->
@@ -109,147 +138,196 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val activeRoom: ChatRoom? = remember(chats, activeChatId) {
-                    activeChatId?.let { id -> chats.firstOrNull { it.id == id } }
+                val currentRoute: NavRoute = when {
+                    showBluetooth -> NavRoute.BluetoothChat
+                    remoteSession != null -> NavRoute.RemoteChat(remoteSession!!.first, remoteSession!!.second)
+                    activeChatId != null && chats.any { it.id == activeChatId } -> NavRoute.LocalChat(activeChatId!!)
+                    else -> NavRoute.Home
                 }
 
-                when {
-                    remoteSession != null -> {
-                        val (info, name) = remoteSession!!
-                        RemoteChatScreen(
-                            info = info,
-                            displayName = name,
-                            onBack = { remoteSession = null }
-                        )
-                    }
+                AnimatedContent(
+                    targetState = currentRoute,
+                    transitionSpec = {
+                        if (targetState != NavRoute.Home) {
+                            (slideInHorizontally(tween(260)) { it / 3 } + fadeIn(tween(220))) togetherWith
+                                (slideOutHorizontally(tween(260)) { -it / 4 } + fadeOut(tween(180)))
+                        } else {
+                            (slideInHorizontally(tween(260)) { -it / 3 } + fadeIn(tween(220))) togetherWith
+                                (slideOutHorizontally(tween(260)) { it / 3 } + fadeOut(tween(180)))
+                        }
+                    },
+                    label = "screen_nav"
+                ) { route ->
+                    when (route) {
+                        is NavRoute.BluetoothChat -> {
+                            val paired = remember(btState.status) { btManager.getPairedDevices() }
+                            BluetoothChatScreen(
+                                btState = btState,
+                                pairedDevices = paired,
+                                onBack = {
+                                    btManager.disconnect()
+                                    showBluetooth = false
+                                },
+                                onHost = { btManager.startHosting() },
+                                onConnect = { dev -> btManager.connectToDevice(dev) },
+                                onSend = { txt -> btManager.sendMessage(txt) },
+                                onDisconnect = { btManager.disconnect() }
+                            )
+                        }
 
-                    activeRoom != null -> {
-                        val messages = remember(dbVersion, activeRoom.id) { db.getMessages(activeRoom.id) }
-                        ChatScreen(
-                            room = activeRoom,
-                            messages = messages,
-                            lanState = lanState,
-                            isRecording = isRecording,
-                            getMediaFile = { fileName -> db.getMediaFile(activeRoom.id, fileName) },
-                            onBack = {
-                                if (isRecording) {
-                                    recorder.cancel()
+                        is NavRoute.RemoteChat -> {
+                            RemoteChatScreen(
+                                info = route.info,
+                                displayName = route.displayName,
+                                onBack = { remoteSession = null }
+                            )
+                        }
+
+                        is NavRoute.LocalChat -> {
+                            val activeRoom: ChatRoom = chats.first { it.id == route.chatId }
+                            val messages = remember(dbVersion, activeRoom.id) { db.getMessages(activeRoom.id) }
+                            ChatScreen(
+                                room = activeRoom,
+                                messages = messages,
+                                lanState = lanState,
+                                isRecording = isRecording,
+                                getMediaFile = { fileName -> db.getMediaFile(activeRoom.id, fileName) },
+                                onBack = {
+                                    if (isRecording) {
+                                        recorder.cancel()
+                                        isRecording = false
+                                    }
+                                    AudioPlayerManager.stop()
+                                    activeChatId = null
+                                },
+                                onSendText = { txt ->
+                                    db.insertTextMessage(activeRoom.id, txt, getString(R.string.me_sender))
+                                },
+                                onPickAttachments = {
+                                    attachmentPicker.launch(arrayOf("*/*"))
+                                },
+                                onStartRecording = {
+                                    val hasPerm = ContextCompat.checkSelfPermission(
+                                        this@MainActivity,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (hasPerm) {
+                                        val outFile = File(
+                                            db.getChatMediaDir(activeRoom.id),
+                                            "${System.currentTimeMillis()}_voice.m4a"
+                                        )
+                                        if (recorder.start(outFile)) {
+                                            isRecording = true
+                                        }
+                                    } else {
+                                        micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                                onStopRecording = {
                                     isRecording = false
-                                }
-                                AudioPlayerManager.stop()
-                                activeChatId = null
-                            },
-                            onSendText = { txt ->
-                                db.insertTextMessage(activeRoom.id, txt, getString(R.string.me_sender))
-                            },
-                            onPickAttachments = {
-                                attachmentPicker.launch(arrayOf("*/*"))
-                            },
-                            onStartRecording = {
-                                val hasPerm = ContextCompat.checkSelfPermission(
-                                    this@MainActivity,
-                                    Manifest.permission.RECORD_AUDIO
-                                ) == PackageManager.PERMISSION_GRANTED
-                                if (hasPerm) {
-                                    val outFile = File(
-                                        db.getChatMediaDir(activeRoom.id),
-                                        "${System.currentTimeMillis()}_voice.m4a"
-                                    )
-                                    if (recorder.start(outFile)) {
-                                        isRecording = true
+                                    val res = recorder.stop()
+                                    if (res != null) {
+                                        val (file, dur) = res
+                                        db.insertMediaMessage(
+                                            chatId = activeRoom.id,
+                                            type = MessageType.AUDIO,
+                                            fileName = file.name,
+                                            mime = "audio/mp4",
+                                            size = file.length(),
+                                            durationMs = dur,
+                                            senderName = getString(R.string.me_sender)
+                                        )
                                     }
-                                } else {
-                                    micLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                }
-                            },
-                            onStopRecording = {
-                                isRecording = false
-                                val res = recorder.stop()
-                                if (res != null) {
-                                    val (file, dur) = res
-                                    db.insertMediaMessage(
-                                        chatId = activeRoom.id,
-                                        type = MessageType.AUDIO,
-                                        fileName = file.name,
-                                        mime = "audio/mp4",
-                                        size = file.length(),
-                                        durationMs = dur,
-                                        senderName = getString(R.string.me_sender)
-                                    )
-                                }
-                            },
-                            onEditMessage = { msgId, newText ->
-                                db.updateMessageText(msgId, newText)
-                            },
-                            onDeleteMessage = { msgId ->
-                                db.deleteMessage(msgId)
-                            },
-                            onToggleLanShare = { enabled ->
-                                if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    if (ContextCompat.checkSelfPermission(
-                                            this@MainActivity,
-                                            Manifest.permission.POST_NOTIFICATIONS
-                                        ) != PackageManager.PERMISSION_GRANTED
-                                    ) {
-                                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                    }
-                                }
-                                db.updateLanSharing(activeRoom.id, enabled)
-                                if (db.getSharedChatsCount() > 0) {
-                                    LanShareService.start(this@MainActivity)
-                                } else {
-                                    LanShareService.stop(this@MainActivity)
-                                }
-                            },
-                            onRegenerateTokens = {
-                                db.regenerateTokens(activeRoom.id)
-                            }
-                        )
-                    }
-
-                    else -> {
-                        HomeScreen(
-                            chats = chats,
-                            lanState = lanState,
-                            storageBytes = storageBytes,
-                            currentLang = currentLang,
-                            onOpenChat = { room -> activeChatId = room.id },
-                            onCreateChat = { title, desc, colorIdx ->
-                                val created = db.createChat(title, desc, colorIdx)
-                                activeChatId = created.id
-                            },
-                            onRenameChat = { id, newTitle -> db.renameChat(id, newTitle) },
-                            onDeleteChat = { id ->
-                                db.deleteChat(id)
-                                if (db.getSharedChatsCount() == 0) {
-                                    LanShareService.stop(this@MainActivity)
-                                }
-                            },
-                            onJoinLan = { urlOrLink, code, displayName ->
-                                val parsed = LanClient.parseLinkOrInputs(urlOrLink, code)
-                                if (parsed == null) {
-                                    Toast.makeText(this, getString(R.string.connection_error), Toast.LENGTH_SHORT).show()
-                                } else {
-                                    scope.launch {
-                                        val res = LanClient.fetchInfo(parsed.first, parsed.second)
-                                        res.onSuccess { info ->
-                                            remoteSession = info to displayName
-                                        }.onFailure {
-                                            Toast.makeText(
+                                },
+                                onEditMessage = { msgId, newText ->
+                                    db.updateMessageText(msgId, newText)
+                                },
+                                onDeleteMessage = { msgId ->
+                                    db.deleteMessage(msgId)
+                                },
+                                onToggleLanShare = { enabled ->
+                                    if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        if (ContextCompat.checkSelfPermission(
                                                 this@MainActivity,
-                                                getString(R.string.connection_error),
-                                                Toast.LENGTH_SHORT
-                                            ).show()
+                                                Manifest.permission.POST_NOTIFICATIONS
+                                            ) != PackageManager.PERMISSION_GRANTED
+                                        ) {
+                                            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                                         }
                                     }
+                                    db.updateLanSharing(activeRoom.id, enabled)
+                                    if (db.getSharedChatsCount() > 0) {
+                                        LanShareService.start(this@MainActivity)
+                                    } else {
+                                        LanShareService.stop(this@MainActivity)
+                                    }
+                                },
+                                onRegenerateTokens = {
+                                    db.regenerateTokens(activeRoom.id)
                                 }
-                            },
-                            onChangeLanguage = { lang ->
-                                prefs.edit().putString("lang", lang).apply()
-                                currentLang = lang
-                                recreate()
-                            }
-                        )
+                            )
+                        }
+
+                        is NavRoute.Home -> {
+                            HomeScreen(
+                                chats = chats,
+                                lanState = lanState,
+                                storageBytes = storageBytes,
+                                currentLang = currentLang,
+                                onOpenChat = { room -> activeChatId = room.id },
+                                onCreateChat = { title, desc, colorIdx ->
+                                    val created = db.createChat(title, desc, colorIdx)
+                                    activeChatId = created.id
+                                },
+                                onRenameChat = { id, newTitle -> db.renameChat(id, newTitle) },
+                                onDeleteChat = { id ->
+                                    db.deleteChat(id)
+                                    if (db.getSharedChatsCount() == 0) {
+                                        LanShareService.stop(this@MainActivity)
+                                    }
+                                },
+                                onJoinLan = { urlOrLink, code, displayName ->
+                                    val parsed = LanClient.parseLinkOrInputs(urlOrLink, code)
+                                    if (parsed == null) {
+                                        Toast.makeText(this, getString(R.string.connection_error), Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        scope.launch {
+                                            val res = LanClient.fetchInfo(parsed.first, parsed.second)
+                                            res.onSuccess { info ->
+                                                remoteSession = info to displayName
+                                            }.onFailure {
+                                                Toast.makeText(
+                                                    this@MainActivity,
+                                                    getString(R.string.connection_error),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    }
+                                },
+                                onOpenBluetoothChat = {
+                                    if (!btManager.isAvailable()) {
+                                        Toast.makeText(this, getString(R.string.bt_not_supported), Toast.LENGTH_SHORT).show()
+                                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                        val needed = arrayOf(
+                                            Manifest.permission.BLUETOOTH_CONNECT,
+                                            Manifest.permission.BLUETOOTH_SCAN
+                                        )
+                                        val allGranted = needed.all {
+                                            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+                                        }
+                                        if (allGranted) showBluetooth = true else btPermLauncher.launch(needed)
+                                    } else {
+                                        showBluetooth = true
+                                    }
+                                },
+                                onChangeLanguage = { lang ->
+                                    prefs.edit().putString("lang", lang).apply()
+                                    currentLang = lang
+                                    recreate()
+                                }
+                            )
+                        }
                     }
                 }
 
