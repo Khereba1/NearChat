@@ -5,10 +5,13 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.khereba1.app.AppLog
+import com.khereba1.app.PREFS
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.ByteArrayOutputStream
@@ -47,6 +50,8 @@ object WifiProxyServer {
     fun start(context: Context, preferredPort: Int = 8899) {
         if (running.get()) return
         appContext = context.applicationContext
+        val customPass = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString("router_pass", "NearChat123") ?: "NearChat123"
         try {
             val ss = try {
                 ServerSocket(preferredPort, 50, InetAddress.getByName("0.0.0.0"))
@@ -82,15 +87,19 @@ object WifiProxyServer {
                 if (mgr != null) {
                     val ch = mgr.initialize(context.applicationContext, Looper.getMainLooper(), null)
                     p2pChannel = ch
-                    mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
-                        override fun onSuccess() {
-                            createP2pGroup(mgr, ch)
+                    // Reuse existing active group if present (keeps password stable on older Android)
+                    mgr.requestGroupInfo(ch) { existing ->
+                        if (existing != null && !existing.networkName.isNullOrEmpty()) {
+                            _state.value = _state.value.copy(
+                                proxyHost = "192.168.49.1",
+                                p2pSsid = existing.networkName ?: "",
+                                p2pPass = existing.passphrase ?: "",
+                                p2pError = ""
+                            )
+                        } else {
+                            createP2pGroup(mgr, ch, customPass)
                         }
-
-                        override fun onFailure(reason: Int) {
-                            createP2pGroup(mgr, ch)
-                        }
-                    })
+                    }
                 } else {
                     _state.value = _state.value.copy(p2pError = "Wi-Fi Direct not supported on this device")
                 }
@@ -100,13 +109,13 @@ object WifiProxyServer {
             }
         } catch (e: Throwable) {
             AppLog.log("PROXY", "Proxy start failed", e)
-            stop()
+            stop(keepGroup = false)
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun createP2pGroup(mgr: WifiP2pManager, ch: WifiP2pManager.Channel) {
-        mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+    private fun createP2pGroup(mgr: WifiP2pManager, ch: WifiP2pManager.Channel, customPass: String) {
+        val listener = object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 pollGroupInfo(mgr, ch, attempt = 0)
             }
@@ -119,7 +128,18 @@ object WifiProxyServer {
                 }
                 _state.value = _state.value.copy(p2pError = msg)
             }
-        })
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val safePass = customPass.trim().let { if (it.length >= 8) it.take(63) else "NearChat123" }
+            val config = WifiP2pConfig.Builder()
+                .setNetworkName("DIRECT-NC-NearChat")
+                .setPassphrase(safePass)
+                .build()
+            mgr.createGroup(ch, config, listener)
+        } else {
+            mgr.createGroup(ch, listener)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -138,27 +158,29 @@ object WifiProxyServer {
             } else {
                 _state.value = _state.value.copy(
                     proxyHost = "192.168.49.1",
-                    p2pError = "Wi-Fi Direct group active, but SSID/Pass hidden by system. Check Wi-Fi Direct settings or try again."
+                    p2pError = "Wi-Fi Direct group active, but SSID/Pass hidden by system."
                 )
             }
         }
     }
 
-    fun stop() {
+    fun stop(keepGroup: Boolean = true) {
         running.set(false)
         mainHandler.removeCallbacksAndMessages(null)
         try { serverSocket?.close() } catch (_: Throwable) {}
         serverSocket = null
         try { pool?.shutdownNow() } catch (_: Throwable) {}
         pool = null
-        try {
-            val mgr = p2pManager
-            val ch = p2pChannel
-            if (mgr != null && ch != null) {
-                mgr.removeGroup(ch, null)
-            }
-        } catch (_: Throwable) {}
-        p2pChannel = null
+        if (!keepGroup) {
+            try {
+                val mgr = p2pManager
+                val ch = p2pChannel
+                if (mgr != null && ch != null) {
+                    mgr.removeGroup(ch, null)
+                }
+            } catch (_: Throwable) {}
+            p2pChannel = null
+        }
         _state.value = RouterBridgeState(isRunning = false)
     }
 

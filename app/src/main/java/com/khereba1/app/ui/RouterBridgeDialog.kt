@@ -1,5 +1,7 @@
 package com.khereba1.app.ui
 
+import android.content.Context
+import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,18 +22,25 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.khereba1.app.PREFS
 import com.khereba1.app.R
 import com.khereba1.app.network.RouterBridgeState
+import com.khereba1.app.network.WifiProxyServer
 
 @Composable
 fun RouterBridgeDialog(
@@ -41,6 +50,10 @@ fun RouterBridgeDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    var customPass by remember {
+        mutableStateOf(prefs.getString("router_pass", "NearChat123") ?: "NearChat123")
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -62,6 +75,19 @@ fun RouterBridgeDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (!state.isRunning && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    OutlinedTextField(
+                        value = customPass,
+                        onValueChange = {
+                            customPass = it
+                            prefs.edit().putString("router_pass", it).apply()
+                        },
+                        label = { Text(stringResource(R.string.router_custom_pass)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
                 if (state.isRunning) {
                     val proxyAddr = "${state.proxyHost}:${state.proxyPort}"
@@ -122,6 +148,12 @@ fun RouterBridgeDialog(
 
                     OutlinedButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.router_stop))
+                    }
+                    TextButton(
+                        onClick = { WifiProxyServer.stop(keepGroup = false) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.router_reset_group))
                     }
                 } else {
                     Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {

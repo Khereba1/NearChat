@@ -81,4 +81,6 @@
     <string name="router_proxy_label">عنوان البروكسي (يتحط في واي فاي الجهاز التاني):</string>
     <string name="router_p2p_label">شبكة Wi-Fi Direct:</string>
     <string name="router_hw_note">ملحوظة: الأجهزة القديمة بشريحة واي فاي واحدة بدون روت مبتقدرش تبث واي فاي جديد وهي متصلة بواي فاي تاني، لكن البروكسي يشتغل على الشبكة أو USB.</string>
+    <string name="router_custom_pass">كلمة سر ثابتة (8 أحرف فأكثر)</string>
+    <string name="router_reset_group">إيقاف وإعادة تعيين الشبكة</string>
 </resources>

@@ -85,4 +85,6 @@
     <string name="router_proxy_label">Proxy Address (set on client Wi-Fi):</string>
     <string name="router_p2p_label">Wi-Fi Direct Hotspot:</string>
     <string name="router_hw_note">Note: On older single-chip devices without root, Android cannot broadcast a new Wi-Fi while already connected to Wi-Fi, so Wi-Fi Direct may fail; the Proxy still works over USB/Hotspot/LAN.</string>
+    <string name="router_custom_pass">Fixed Password (8+ chars)</string>
+    <string name="router_reset_group">Stop &amp; Reset Wi-Fi Group</string>
 </resources>
