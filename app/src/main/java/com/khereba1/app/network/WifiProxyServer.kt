@@ -2,6 +2,9 @@ package com.khereba1.app.network
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.Looper
 import com.khereba1.app.AppLog
@@ -10,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
@@ -32,6 +36,7 @@ object WifiProxyServer {
     private var pool: ExecutorService? = null
     private var p2pChannel: WifiP2pManager.Channel? = null
     private var p2pManager: WifiP2pManager? = null
+    private var appContext: Context? = null
 
     private val _state = MutableStateFlow(RouterBridgeState())
     val state: StateFlow<RouterBridgeState> = _state
@@ -39,11 +44,12 @@ object WifiProxyServer {
     @SuppressLint("MissingPermission")
     fun start(context: Context, preferredPort: Int = 8899) {
         if (running.get()) return
+        appContext = context.applicationContext
         try {
             val ss = try {
-                ServerSocket(preferredPort)
+                ServerSocket(preferredPort, 50, InetAddress.getByName("0.0.0.0"))
             } catch (_: Throwable) {
-                ServerSocket(0)
+                ServerSocket(0, 50, InetAddress.getByName("0.0.0.0"))
             }
             serverSocket = ss
             running.set(true)
@@ -67,40 +73,63 @@ object WifiProxyServer {
                 }
             }
 
-            // Try starting a Wi-Fi Direct group if hardware allows
+            // Clear any stale Wi-Fi Direct group first, then create a fresh group
             try {
                 val mgr = context.applicationContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
                 p2pManager = mgr
                 if (mgr != null) {
                     val ch = mgr.initialize(context.applicationContext, Looper.getMainLooper(), null)
                     p2pChannel = ch
-                    mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+                    mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
                         override fun onSuccess() {
-                            mgr.requestGroupInfo(ch) { group ->
-                                if (group != null) {
-                                    _state.value = _state.value.copy(
-                                        p2pSsid = group.networkName ?: "",
-                                        p2pPass = group.passphrase ?: "",
-                                        p2pError = ""
-                                    )
-                                }
-                            }
+                            createP2pGroup(mgr, ch)
                         }
 
                         override fun onFailure(reason: Int) {
-                            _state.value = _state.value.copy(
-                                p2pError = "Wi-Fi Direct unavailable (code $reason)"
-                            )
+                            createP2pGroup(mgr, ch)
                         }
                     })
                 }
             } catch (e: Throwable) {
-                AppLog.log("PROXY", "Wi-Fi Direct group error", e)
+                AppLog.log("PROXY", "Wi-Fi Direct setup error", e)
             }
         } catch (e: Throwable) {
             AppLog.log("PROXY", "Proxy start failed", e)
             stop()
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun createP2pGroup(mgr: WifiP2pManager, ch: WifiP2pManager.Channel) {
+        mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                mgr.requestConnectionInfo(ch) { connInfo ->
+                    val ownerIp = connInfo?.groupOwnerAddress?.hostAddress
+                    if (!ownerIp.isNullOrEmpty()) {
+                        _state.value = _state.value.copy(proxyHost = ownerIp)
+                    }
+                }
+                mgr.requestGroupInfo(ch) { group ->
+                    if (group != null) {
+                        _state.value = _state.value.copy(
+                            proxyHost = "192.168.49.1",
+                            p2pSsid = group.networkName ?: "",
+                            p2pPass = group.passphrase ?: "",
+                            p2pError = ""
+                        )
+                    }
+                }
+            }
+
+            override fun onFailure(reason: Int) {
+                val msg = when (reason) {
+                    WifiP2pManager.BUSY -> "Wi-Fi Direct busy (turn Location ON and retry)"
+                    WifiP2pManager.P2P_UNSUPPORTED -> "Wi-Fi Direct unsupported on this device"
+                    else -> "Wi-Fi Direct unavailable (code $reason) — turn Location ON or hardware blocks simultaneous Wi-Fi"
+                }
+                _state.value = _state.value.copy(p2pError = msg)
+            }
+        })
     }
 
     fun stop() {
@@ -120,6 +149,24 @@ object WifiProxyServer {
         _state.value = RouterBridgeState(isRunning = false)
     }
 
+    private fun openInternetSocket(host: String, port: Int): Socket {
+        val ctx = appContext
+        if (ctx != null) {
+            try {
+                val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val activeNet: Network? = cm.activeNetwork
+                val caps = if (activeNet != null) cm.getNetworkCapabilities(activeNet) else null
+                if (activeNet != null && caps != null &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                ) {
+                    return activeNet.socketFactory.createSocket(host, port)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        return Socket(host, port)
+    }
+
     private fun handleProxyClient(client: Socket) {
         client.use { c ->
             try {
@@ -133,22 +180,26 @@ object WifiProxyServer {
                 val target = parts[1]
 
                 val headerLines = mutableListOf<String>()
+                var contentLength = 0
                 while (true) {
                     val line = readLine(inStream) ?: break
                     if (line.isEmpty()) break
                     headerLines.add(line)
+                    if (line.lowercase().startsWith("content-length:")) {
+                        contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
+                    }
                 }
 
                 if (method == "CONNECT") {
                     val host = target.substringBefore(":")
                     val port = target.substringAfter(":", "443").toIntOrNull() ?: 443
-                    Socket(host, port).use { remote ->
+                    openInternetSocket(host, port).use { remote ->
                         outStream.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
                         outStream.flush()
                         val t1 = Thread { pipe(inStream, remote.getOutputStream()) }
                         t1.start()
                         pipe(remote.getInputStream(), outStream)
-                        t1.join(1000)
+                        t1.join(1500)
                     }
                 } else {
                     val uri = java.net.URI(target)
@@ -156,7 +207,7 @@ object WifiProxyServer {
                     val port = if (uri.port > 0) uri.port else 80
                     val path = (uri.rawPath?.ifEmpty { "/" } ?: "/") +
                         (if (uri.rawQuery != null) "?${uri.rawQuery}" else "")
-                    Socket(host, port).use { remote ->
+                    openInternetSocket(host, port).use { remote ->
                         val rOut = remote.getOutputStream()
                         rOut.write("$method $path HTTP/1.1\r\n".toByteArray(StandardCharsets.UTF_8))
                         for (h in headerLines) {
@@ -165,6 +216,16 @@ object WifiProxyServer {
                             }
                         }
                         rOut.write("Connection: close\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+                        if (contentLength > 0) {
+                            val buf = ByteArray(8192)
+                            var rem = contentLength
+                            while (rem > 0) {
+                                val r = inStream.read(buf, 0, minOf(buf.size, rem))
+                                if (r <= 0) break
+                                rOut.write(buf, 0, r)
+                                rem -= r
+                            }
+                        }
                         rOut.flush()
                         pipe(remote.getInputStream(), outStream)
                     }

@@ -94,14 +94,22 @@ fun RouterBridgeDialog(
                             color = MaterialTheme.colorScheme.primaryContainer,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Text(
-                                    text = stringResource(R.string.router_p2p_label),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text("SSID: ${state.p2pSsid}")
-                                Text("Pass: ${state.p2pPass}")
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = stringResource(R.string.router_p2p_label),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text("SSID: ${state.p2pSsid}")
+                                    Text("Pass: ${state.p2pPass}")
+                                }
+                                IconButton(onClick = { copyToClipboard(context, state.p2pPass) }) {
+                                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                }
                             }
                         }
                     } else if (state.p2pError.isNotEmpty()) {
