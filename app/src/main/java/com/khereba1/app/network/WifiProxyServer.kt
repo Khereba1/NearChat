@@ -29,6 +29,7 @@ data class RouterBridgeState(
     val isRunning: Boolean = false,
     val proxyHost: String = "",
     val proxyPort: Int = 8899,
+    val socksPort: Int = 1080,
     val p2pSsid: String = "",
     val p2pPass: String = "",
     val p2pError: String = ""
@@ -37,6 +38,7 @@ data class RouterBridgeState(
 object WifiProxyServer {
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
+    private var socksSocket: ServerSocket? = null
     private var pool: ExecutorService? = null
     private var p2pChannel: WifiP2pManager.Channel? = null
     private var p2pManager: WifiP2pManager? = null
@@ -47,7 +49,7 @@ object WifiProxyServer {
     val state: StateFlow<RouterBridgeState> = _state
 
     @SuppressLint("MissingPermission")
-    fun start(context: Context, preferredPort: Int = 8899) {
+    fun start(context: Context, preferredPort: Int = 8899, preferredSocksPort: Int = 1080) {
         if (running.get()) return
         appContext = context.applicationContext
         val customPass = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -58,7 +60,13 @@ object WifiProxyServer {
             } catch (_: Throwable) {
                 ServerSocket(0, 50, InetAddress.getByName("0.0.0.0"))
             }
+            val socks = try {
+                ServerSocket(preferredSocksPort, 50, InetAddress.getByName("0.0.0.0"))
+            } catch (_: Throwable) {
+                ServerSocket(0, 50, InetAddress.getByName("0.0.0.0"))
+            }
             serverSocket = ss
+            socksSocket = socks
             running.set(true)
             val exec = Executors.newCachedThreadPool()
             pool = exec
@@ -67,6 +75,7 @@ object WifiProxyServer {
                 isRunning = true,
                 proxyHost = ip,
                 proxyPort = ss.localPort,
+                socksPort = socks.localPort,
                 p2pError = "Starting Wi-Fi Direct…"
             )
 
@@ -81,13 +90,23 @@ object WifiProxyServer {
                 }
             }
 
+            exec.execute {
+                while (running.get()) {
+                    try {
+                        val client = socks.accept()
+                        exec.execute { handleSocks5Client(client) }
+                    } catch (_: Throwable) {
+                        if (!running.get()) break
+                    }
+                }
+            }
+
             try {
                 val mgr = context.applicationContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
                 p2pManager = mgr
                 if (mgr != null) {
                     val ch = mgr.initialize(context.applicationContext, Looper.getMainLooper(), null)
                     p2pChannel = ch
-                    // Reuse existing active group if present (keeps password stable on older Android)
                     mgr.requestGroupInfo(ch) { existing ->
                         if (existing != null && !existing.networkName.isNullOrEmpty()) {
                             _state.value = _state.value.copy(
@@ -168,7 +187,9 @@ object WifiProxyServer {
         running.set(false)
         mainHandler.removeCallbacksAndMessages(null)
         try { serverSocket?.close() } catch (_: Throwable) {}
+        try { socksSocket?.close() } catch (_: Throwable) {}
         serverSocket = null
+        socksSocket = null
         try { pool?.shutdownNow() } catch (_: Throwable) {}
         pool = null
         if (!keepGroup) {
@@ -200,6 +221,75 @@ object WifiProxyServer {
             }
         }
         return Socket(host, port)
+    }
+
+    private fun handleSocks5Client(client: Socket) {
+        client.use { c ->
+            try {
+                c.soTimeout = 30_000
+                val inS = c.getInputStream()
+                val outS = c.getOutputStream()
+
+                val ver = inS.read()
+                if (ver != 0x05) return
+                val nMethods = inS.read()
+                if (nMethods <= 0) return
+                repeat(nMethods) { inS.read() }
+                // Reply: SOCKS5, no authentication
+                outS.write(byteArrayOf(0x05, 0x00))
+                outS.flush()
+
+                val rVer = inS.read()
+                val cmd = inS.read()
+                inS.read() // reserved
+                val atyp = inS.read()
+                if (rVer != 0x05 || cmd != 0x01) return
+
+                val host = when (atyp) {
+                    0x01 -> {
+                        val b = ByteArray(4)
+                        readExact(inS, b)
+                        InetAddress.getByAddress(b).hostAddress ?: return
+                    }
+                    0x03 -> {
+                        val len = inS.read()
+                        if (len <= 0) return
+                        val b = ByteArray(len)
+                        readExact(inS, b)
+                        String(b, StandardCharsets.UTF_8)
+                    }
+                    0x04 -> {
+                        val b = ByteArray(16)
+                        readExact(inS, b)
+                        InetAddress.getByAddress(b).hostAddress ?: return
+                    }
+                    else -> return
+                }
+                val p1 = inS.read()
+                val p2 = inS.read()
+                if (p1 < 0 || p2 < 0) return
+                val port = (p1 shl 8) or p2
+
+                openInternetSocket(host, port).use { remote ->
+                    outS.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
+                    outS.flush()
+                    val t1 = Thread { pipe(inS, remote.getOutputStream()) }
+                    t1.start()
+                    pipe(remote.getInputStream(), outS)
+                    t1.join(1500)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun readExact(input: InputStream, buf: ByteArray) {
+        var off = 0
+        while (off < buf.size) {
+            val r = input.read(buf, off, buf.size - off)
+            if (r <= 0) throw java.io.EOFException()
+            off += r
+        }
     }
 
     private fun handleProxyClient(client: Socket) {

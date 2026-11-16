@@ -90,26 +90,39 @@ fun RouterBridgeDialog(
                 }
 
                 if (state.isRunning) {
-                    val proxyAddr = "${state.proxyHost}:${state.proxyPort}"
+                    val httpAddr = "${state.proxyHost}:${state.proxyPort}"
+                    val socksAddr = "${state.proxyHost}:${state.socksPort}"
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = stringResource(R.string.router_proxy_label),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(proxyAddr, fontWeight = FontWeight.SemiBold)
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "HTTP Proxy (Wi-Fi Settings):",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(httpAddr, fontWeight = FontWeight.SemiBold)
+                                }
+                                IconButton(onClick = { copyToClipboard(context, httpAddr) }) {
+                                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                }
                             }
-                            IconButton(onClick = { copyToClipboard(context, proxyAddr) }) {
-                                Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "SOCKS5 (Telegram / SocksDroid VPN):",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(socksAddr, fontWeight = FontWeight.SemiBold)
+                                }
+                                IconButton(onClick = { copyToClipboard(context, socksAddr) }) {
+                                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                }
                             }
                         }
                     }
