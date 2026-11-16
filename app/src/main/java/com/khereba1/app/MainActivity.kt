@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
                             isRecording = true
                         }
                     } else if (!granted) {
-                        Toast.makeText(this, getString(R.string.mic_permission_needed), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.mic_permission_needed), Toast.LENGTH_SHORT).show()
                     }
                 }
 
@@ -115,7 +115,7 @@ class MainActivity : ComponentActivity() {
                     if (results.values.all { it }) {
                         showBluetooth = true
                     } else {
-                        Toast.makeText(this, getString(R.string.bt_permission_needed), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, getString(R.string.bt_permission_needed), Toast.LENGTH_SHORT).show()
                     }
                 }
 
@@ -289,7 +289,7 @@ class MainActivity : ComponentActivity() {
                                 onJoinLan = { urlOrLink, code, displayName ->
                                     val parsed = LanClient.parseLinkOrInputs(urlOrLink, code)
                                     if (parsed == null) {
-                                        Toast.makeText(this, getString(R.string.connection_error), Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(this@MainActivity, getString(R.string.connection_error), Toast.LENGTH_SHORT).show()
                                     } else {
                                         scope.launch {
                                             val res = LanClient.fetchInfo(parsed.first, parsed.second)
@@ -307,14 +307,14 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onOpenBluetoothChat = {
                                     if (!btManager.isAvailable()) {
-                                        Toast.makeText(this, getString(R.string.bt_not_supported), Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(this@MainActivity, getString(R.string.bt_not_supported), Toast.LENGTH_SHORT).show()
                                     } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                         val needed = arrayOf(
                                             Manifest.permission.BLUETOOTH_CONNECT,
                                             Manifest.permission.BLUETOOTH_SCAN
                                         )
                                         val allGranted = needed.all {
-                                            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+                                            ContextCompat.checkSelfPermission(this@MainActivity, it) == PackageManager.PERMISSION_GRANTED
                                         }
                                         if (allGranted) showBluetooth = true else btPermLauncher.launch(needed)
                                     } else {
