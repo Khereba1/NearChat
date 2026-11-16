@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.WifiTethering
@@ -67,6 +68,7 @@ import com.khereba1.app.AppLog
 import com.khereba1.app.R
 import com.khereba1.app.data.ChatRoom
 import com.khereba1.app.network.LanServerState
+import com.khereba1.app.network.RouterBridgeState
 import com.khereba1.app.ui.theme.ChatAccentColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -77,6 +79,7 @@ import java.util.Locale
 fun HomeScreen(
     chats: List<ChatRoom>,
     lanState: LanServerState,
+    routerState: RouterBridgeState,
     storageBytes: Long,
     currentLang: String,
     onOpenChat: (ChatRoom) -> Unit,
@@ -85,12 +88,15 @@ fun HomeScreen(
     onDeleteChat: (String) -> Unit,
     onJoinLan: (String, String, String) -> Unit,
     onOpenBluetoothChat: () -> Unit,
+    onStartRouter: () -> Unit,
+    onStopRouter: () -> Unit,
     onChangeLanguage: (String) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinDialog by remember { mutableStateOf(false) }
+    var showRouterDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ChatRoom?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatRoom?>(null) }
@@ -118,7 +124,9 @@ fun HomeScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = stringResource(R.string.app_name),
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             if (lanState.isRunning) {
                                 Spacer(Modifier.width(8.dp))
@@ -144,6 +152,14 @@ fun HomeScreen(
                     }
                     IconButton(onClick = onOpenBluetoothChat) {
                         Icon(Icons.Rounded.Bluetooth, contentDescription = stringResource(R.string.bt_chat_title))
+                    }
+                    IconButton(onClick = { showRouterDialog = true }) {
+                        Icon(
+                            Icons.Rounded.Router,
+                            contentDescription = stringResource(R.string.router_title),
+                            tint = if (routerState.isRunning) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                        )
                     }
                     IconButton(onClick = { showJoinDialog = true }) {
                         Icon(Icons.Rounded.Link, contentDescription = stringResource(R.string.join_lan_chat))
@@ -279,6 +295,15 @@ fun HomeScreen(
                 showJoinDialog = false
                 onJoinLan(urlOrLink, code, displayName)
             }
+        )
+    }
+
+    if (showRouterDialog) {
+        RouterBridgeDialog(
+            state = routerState,
+            onStart = onStartRouter,
+            onStop = onStopRouter,
+            onDismiss = { showRouterDialog = false }
         )
     }
 
@@ -430,14 +455,16 @@ fun CreateChatDialog(
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
-                    label = { Text(stringResource(R.string.chat_title_hint)) },
+                    label = { Text(stringResource(R.string.chat_title_label)) },
+                    placeholder = { Text(stringResource(R.string.chat_title_hint)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
                     value = desc,
                     onValueChange = { desc = it },
-                    label = { Text(stringResource(R.string.chat_desc_hint)) },
+                    label = { Text(stringResource(R.string.chat_desc_label)) },
+                    placeholder = { Text(stringResource(R.string.chat_desc_hint)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -498,6 +525,7 @@ private fun JoinLanDialog(
                     value = urlOrLink,
                     onValueChange = { urlOrLink = it },
                     label = { Text(stringResource(R.string.server_url_label)) },
+                    placeholder = { Text(stringResource(R.string.server_url_hint)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )

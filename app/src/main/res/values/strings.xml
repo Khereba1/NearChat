@@ -15,8 +15,10 @@
     <string name="no_chats_title">No chats yet</string>
     <string name="no_chats_subtitle">Create an empty chat to organize notes, voice memos, photos, videos, and files — or share any chat over your local network.</string>
     <string name="new_chat">New Chat</string>
-    <string name="chat_title_hint">Chat name (e.g. Work, Ideas, Media)</string>
-    <string name="chat_desc_hint">Short note (optional)</string>
+    <string name="chat_title_label">Chat name</string>
+    <string name="chat_title_hint">e.g. Work, Ideas, Media</string>
+    <string name="chat_desc_label">Short note</string>
+    <string name="chat_desc_hint">Optional</string>
     <string name="create">Create</string>
     <string name="cancel">Cancel</string>
     <string name="save">Save</string>
@@ -43,8 +45,9 @@
     <string name="lan_regenerate">Regenerate Links</string>
     <string name="lan_no_wifi">No Wi-Fi detected. Turn on Mobile Hotspot (no data needed) or connect to Wi-Fi.</string>
     <string name="join_lan_chat">Join LAN Chat</string>
-    <string name="join_lan_hint">Paste full link (http://192.168…/c/…) or enter Server URL + Code</string>
-    <string name="server_url_label">Server URL (e.g. http://192.168.1.5:8765)</string>
+    <string name="join_lan_hint">Paste full link or enter Server URL + Code</string>
+    <string name="server_url_label">Server URL or Link</string>
+    <string name="server_url_hint">http://192.168.1.5:8765</string>
     <string name="access_code_label">Access Code</string>
     <string name="your_name_label">Your display name</string>
     <string name="connect">Connect</string>
@@ -65,9 +68,9 @@
     <string name="uploading">Uploading…</string>
     <string name="connection_error">Could not connect. Make sure both devices are on the same Wi-Fi or Hotspot.</string>
     <string name="me_sender">Me</string>
-    <string name="bt_chat_title">Bluetooth Chat (No Wi-Fi)</string>
-    <string name="bt_host_btn">Host Bluetooth Room</string>
-    <string name="bt_connect_btn">Connect to Paired Device</string>
+    <string name="bt_chat_title">Bluetooth Chat</string>
+    <string name="bt_host_btn">Host Bluetooth</string>
+    <string name="bt_connect_btn">Connect Device</string>
     <string name="bt_disconnect">Disconnect</string>
     <string name="bt_waiting">Waiting for Bluetooth connection…</string>
     <string name="bt_connected">Connected to %1$s</string>
@@ -75,4 +78,11 @@
     <string name="bt_permission_needed">Bluetooth permission is needed to chat without Wi-Fi.</string>
     <string name="bt_no_paired">No paired Bluetooth devices found. Pair both phones in Android Settings first.</string>
     <string name="bt_tip">Works completely offline without Wi-Fi or Hotspot. Pair the two phones in Bluetooth settings, then one taps Host and the other Connects.</string>
+    <string name="router_title">Wi-Fi Repeater &amp; Proxy</string>
+    <string name="router_desc">Share this device\'s internet connection via a local HTTP/HTTPS Proxy (and Wi-Fi Direct group if hardware supports simultaneous Wi-Fi).</string>
+    <string name="router_start">Start Router Bridge</string>
+    <string name="router_stop">Stop Router Bridge</string>
+    <string name="router_proxy_label">Proxy Address (set on client Wi-Fi):</string>
+    <string name="router_p2p_label">Wi-Fi Direct Hotspot:</string>
+    <string name="router_hw_note">Note: On older single-chip devices without root, Android cannot broadcast a new Wi-Fi while already connected to Wi-Fi, so Wi-Fi Direct may fail; the Proxy still works over USB/Hotspot/LAN.</string>
 </resources>

@@ -11,8 +11,10 @@
     <string name="no_chats_title">مفيش شاتات لسه</string>
     <string name="no_chats_subtitle">اعمل شات فاضي لتنظيم رسائلك، ريكورداتك، صورك، فيديوهاتك وملفاتك — أو شارك أي شات على الشبكة الداخلية.</string>
     <string name="new_chat">شات جديد</string>
-    <string name="chat_title_hint">اسم الشات (مثلاً: شغل، أفكار، ملفات)</string>
-    <string name="chat_desc_hint">وصف قصير (اختياري)</string>
+    <string name="chat_title_label">اسم الشات</string>
+    <string name="chat_title_hint">مثلاً: شغل، أفكار، ملفات</string>
+    <string name="chat_desc_label">وصف قصير</string>
+    <string name="chat_desc_hint">اختياري</string>
     <string name="create">إنشاء</string>
     <string name="cancel">إلغاء</string>
     <string name="save">حفظ</string>
@@ -39,8 +41,9 @@
     <string name="lan_regenerate">توليد روابط جديدة</string>
     <string name="lan_no_wifi">مفيش واي فاي. افتح نقطة الاتصال (Hotspot) بدون نت أو اتصل بواي فاي.</string>
     <string name="join_lan_chat">دخول شات على الشبكة</string>
-    <string name="join_lan_hint">الصق الرابط كامل (http://192.168…/c/…) أو اكتب العنوان والكود</string>
-    <string name="server_url_label">عنوان السيرفر (مثلاً http://192.168.1.5:8765)</string>
+    <string name="join_lan_hint">الصق الرابط كامل أو اكتب العنوان والكود</string>
+    <string name="server_url_label">عنوان السيرفر أو الرابط</string>
+    <string name="server_url_hint">http://192.168.1.5:8765</string>
     <string name="access_code_label">كود الدخول</string>
     <string name="your_name_label">اسمك الظاهر</string>
     <string name="connect">اتصال</string>
@@ -61,9 +64,9 @@
     <string name="uploading">جاري الرفع…</string>
     <string name="connection_error">تعذر الاتصال. تأكد إن الجهازين على نفس الواي فاي أو نقطة الاتصال.</string>
     <string name="me_sender">أنا</string>
-    <string name="bt_chat_title">دردشة بلوتوث (بدون واي فاي)</string>
-    <string name="bt_host_btn">استضافة غرفة بلوتوث</string>
-    <string name="bt_connect_btn">اتصال بجهاز مقترن</string>
+    <string name="bt_chat_title">دردشة بلوتوث</string>
+    <string name="bt_host_btn">استضافة غرفة</string>
+    <string name="bt_connect_btn">اتصال بجهاز</string>
     <string name="bt_disconnect">قطع الاتصال</string>
     <string name="bt_waiting">في انتظار اتصال البلوتوث…</string>
     <string name="bt_connected">متصل بـ %1$s</string>
@@ -71,4 +74,11 @@
     <string name="bt_permission_needed">محتاج صلاحية البلوتوث للدردشة بدون واي فاي.</string>
     <string name="bt_no_paired">مفيش أجهزة مقترنة. اعمل اقتران بين الموبايلين من إعدادات البلوتوث الأول.</string>
     <string name="bt_tip">يشتغل بدون واي فاي أو شبكة تماماً. اعمل اقتران بين الجهازين في الإعدادات، وبعدين واحد يضغط استضافة والتاني اتصال.</string>
+    <string name="router_title">مكرر واي فاي وبروكسي</string>
+    <string name="router_desc">مشاركة إنترنت الجهاز عبر Proxy محلي (مع شبكة Wi-Fi Direct لو الهاردوير بيدعم واي فاي مزدوج).</string>
+    <string name="router_start">تشغيل الراوتر</string>
+    <string name="router_stop">إيقاف الراوتر</string>
+    <string name="router_proxy_label">عنوان البروكسي (يتحط في واي فاي الجهاز التاني):</string>
+    <string name="router_p2p_label">شبكة Wi-Fi Direct:</string>
+    <string name="router_hw_note">ملحوظة: الأجهزة القديمة بشريحة واي فاي واحدة بدون روت مبتقدرش تبث واي فاي جديد وهي متصلة بواي فاي تاني، لكن البروكسي يشتغل على الشبكة أو USB.</string>
 </resources>

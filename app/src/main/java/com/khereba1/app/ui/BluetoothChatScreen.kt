@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.khereba1.app.R
 import com.khereba1.app.network.BtConnectionStatus
@@ -90,7 +93,12 @@ fun BluetoothChatScreen(
                 },
                 title = {
                     Column {
-                        Text(stringResource(R.string.bt_chat_title), fontWeight = FontWeight.Bold)
+                        Text(
+                            text = stringResource(R.string.bt_chat_title),
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         val subtitle = when (btState.status) {
                             BtConnectionStatus.CONNECTED -> stringResource(R.string.bt_connected, btState.peerName)
                             BtConnectionStatus.HOSTING, BtConnectionStatus.CONNECTING -> stringResource(R.string.bt_waiting)
@@ -99,7 +107,9 @@ fun BluetoothChatScreen(
                         Text(
                             text = subtitle,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
@@ -115,7 +125,11 @@ fun BluetoothChatScreen(
         },
         bottomBar = {
             if (btState.status == BtConnectionStatus.CONNECTED) {
-                Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 4.dp) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 4.dp,
+                    modifier = Modifier.navigationBarsPadding().imePadding()
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -193,13 +207,13 @@ fun BluetoothChatScreen(
                         } else {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(onClick = onHost, modifier = Modifier.weight(1f)) {
-                                    Text(stringResource(R.string.bt_host_btn))
+                                    Text(stringResource(R.string.bt_host_btn), maxLines = 1)
                                 }
                                 OutlinedButton(
                                     onClick = { showPairedList = !showPairedList },
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    Text(stringResource(R.string.bt_connect_btn))
+                                    Text(stringResource(R.string.bt_connect_btn), maxLines = 1)
                                 }
                             }
                         }

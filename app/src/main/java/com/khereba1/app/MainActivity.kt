@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -36,6 +37,7 @@ import com.khereba1.app.media.VoiceRecorder
 import com.khereba1.app.network.BluetoothChatManager
 import com.khereba1.app.network.LanClient
 import com.khereba1.app.network.LanShareService
+import com.khereba1.app.network.WifiProxyServer
 import com.khereba1.app.ui.BluetoothChatScreen
 import com.khereba1.app.ui.ChatScreen
 import com.khereba1.app.ui.HomeScreen
@@ -67,6 +69,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         extractShareIntent(intent)
 
@@ -79,6 +82,7 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 val dbVersion by db.changes.collectAsState()
                 val lanState by LanShareService.state.collectAsState()
+                val routerState by WifiProxyServer.state.collectAsState()
                 val btState by btManager.state.collectAsState()
 
                 val chats = remember(dbVersion) { db.getAllChats() }
@@ -101,7 +105,7 @@ class MainActivity : ComponentActivity() {
                             isRecording = true
                         }
                     } else if (!granted) {
-                        Toast.makeText(this@MainActivity, getString(R.string.mic_permission_needed), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, getString(R.string.mic_permission_needed), Toast.LENGTH_SHORT).show()
                     }
                 }
 
@@ -109,13 +113,19 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission()
                 ) { _ -> }
 
+                val routerPermLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { _ ->
+                    WifiProxyServer.start(this@MainActivity)
+                }
+
                 val btPermLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { results ->
                     if (results.values.all { it }) {
                         showBluetooth = true
                     } else {
-                        Toast.makeText(this@MainActivity, getString(R.string.bt_permission_needed), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, getString(R.string.bt_permission_needed), Toast.LENGTH_SHORT).show()
                     }
                 }
 
@@ -272,6 +282,7 @@ class MainActivity : ComponentActivity() {
                             HomeScreen(
                                 chats = chats,
                                 lanState = lanState,
+                                routerState = routerState,
                                 storageBytes = storageBytes,
                                 currentLang = currentLang,
                                 onOpenChat = { room -> activeChatId = room.id },
@@ -321,6 +332,15 @@ class MainActivity : ComponentActivity() {
                                         showBluetooth = true
                                     }
                                 },
+                                onStartRouter = {
+                                    val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION)
+                                    } else {
+                                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                                    }
+                                    routerPermLauncher.launch(perms)
+                                },
+                                onStopRouter = { WifiProxyServer.stop() },
                                 onChangeLanguage = { lang ->
                                     prefs.edit().putString("lang", lang).apply()
                                     currentLang = lang
