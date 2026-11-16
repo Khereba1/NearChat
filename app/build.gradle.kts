@@ -11,10 +11,10 @@ android {
 
     defaultConfig {
         applicationId = "com.khereba1.nearchat"
-        minSdk = 29
+        minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.2"
+        versionCode = 5
+        versionName = "1.2.1"
     }
 
     signingConfigs {
