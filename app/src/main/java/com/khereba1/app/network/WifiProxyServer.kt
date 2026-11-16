@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Handler
 import android.os.Looper
 import com.khereba1.app.AppLog
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +38,7 @@ object WifiProxyServer {
     private var p2pChannel: WifiP2pManager.Channel? = null
     private var p2pManager: WifiP2pManager? = null
     private var appContext: Context? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _state = MutableStateFlow(RouterBridgeState())
     val state: StateFlow<RouterBridgeState> = _state
@@ -59,7 +61,8 @@ object WifiProxyServer {
             _state.value = RouterBridgeState(
                 isRunning = true,
                 proxyHost = ip,
-                proxyPort = ss.localPort
+                proxyPort = ss.localPort,
+                p2pError = "Starting Wi-Fi Direct…"
             )
 
             exec.execute {
@@ -73,7 +76,6 @@ object WifiProxyServer {
                 }
             }
 
-            // Clear any stale Wi-Fi Direct group first, then create a fresh group
             try {
                 val mgr = context.applicationContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
                 p2pManager = mgr
@@ -89,9 +91,12 @@ object WifiProxyServer {
                             createP2pGroup(mgr, ch)
                         }
                     })
+                } else {
+                    _state.value = _state.value.copy(p2pError = "Wi-Fi Direct not supported on this device")
                 }
             } catch (e: Throwable) {
                 AppLog.log("PROXY", "Wi-Fi Direct setup error", e)
+                _state.value = _state.value.copy(p2pError = "Wi-Fi Direct error: ${e.message}")
             }
         } catch (e: Throwable) {
             AppLog.log("PROXY", "Proxy start failed", e)
@@ -103,22 +108,7 @@ object WifiProxyServer {
     private fun createP2pGroup(mgr: WifiP2pManager, ch: WifiP2pManager.Channel) {
         mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
-                mgr.requestConnectionInfo(ch) { connInfo ->
-                    val ownerIp = connInfo?.groupOwnerAddress?.hostAddress
-                    if (!ownerIp.isNullOrEmpty()) {
-                        _state.value = _state.value.copy(proxyHost = ownerIp)
-                    }
-                }
-                mgr.requestGroupInfo(ch) { group ->
-                    if (group != null) {
-                        _state.value = _state.value.copy(
-                            proxyHost = "192.168.49.1",
-                            p2pSsid = group.networkName ?: "",
-                            p2pPass = group.passphrase ?: "",
-                            p2pError = ""
-                        )
-                    }
-                }
+                pollGroupInfo(mgr, ch, attempt = 0)
             }
 
             override fun onFailure(reason: Int) {
@@ -132,8 +122,31 @@ object WifiProxyServer {
         })
     }
 
+    @SuppressLint("MissingPermission")
+    private fun pollGroupInfo(mgr: WifiP2pManager, ch: WifiP2pManager.Channel, attempt: Int) {
+        if (!running.get()) return
+        mgr.requestGroupInfo(ch) { group ->
+            if (group != null && !group.networkName.isNullOrEmpty()) {
+                _state.value = _state.value.copy(
+                    proxyHost = "192.168.49.1",
+                    p2pSsid = group.networkName ?: "",
+                    p2pPass = group.passphrase ?: "",
+                    p2pError = ""
+                )
+            } else if (attempt < 5) {
+                mainHandler.postDelayed({ pollGroupInfo(mgr, ch, attempt + 1) }, 700L)
+            } else {
+                _state.value = _state.value.copy(
+                    proxyHost = "192.168.49.1",
+                    p2pError = "Wi-Fi Direct group active, but SSID/Pass hidden by system. Check Wi-Fi Direct settings or try again."
+                )
+            }
+        }
+    }
+
     fun stop() {
         running.set(false)
+        mainHandler.removeCallbacksAndMessages(null)
         try { serverSocket?.close() } catch (_: Throwable) {}
         serverSocket = null
         try { pool?.shutdownNow() } catch (_: Throwable) {}
