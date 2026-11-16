@@ -1,0 +1,68 @@
+<resources>
+    <string name="app_name" translatable="false">NearChat</string>
+    <string name="developer_name" translatable="false">Khereba1</string>
+    <string name="developer_label">Developer</string>
+    <string name="language_label">Language</string>
+    <string name="lang_system">System</string>
+    <string name="lang_arabic" translatable="false">العربية</string>
+    <string name="lang_english" translatable="false">English</string>
+    <string name="error_log">Error log</string>
+    <string name="log_empty">The log is empty.</string>
+    <string name="clear_log">Clear</string>
+    <string name="settings_title">Settings</string>
+    <string name="storage_used">Storage used</string>
+    <string name="search_chats">Search chats…</string>
+    <string name="no_chats_title">No chats yet</string>
+    <string name="no_chats_subtitle">Create an empty chat to organize notes, voice memos, photos, videos, and files — or share any chat over your local network.</string>
+    <string name="new_chat">New Chat</string>
+    <string name="chat_title_hint">Chat name (e.g. Work, Ideas, Media)</string>
+    <string name="chat_desc_hint">Short note (optional)</string>
+    <string name="create">Create</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="delete">Delete</string>
+    <string name="rename">Rename</string>
+    <string name="edit">Edit</string>
+    <string name="copy">Copy</string>
+    <string name="open">Open</string>
+    <string name="share">Share</string>
+    <string name="rename_chat">Rename chat</string>
+    <string name="delete_chat_confirm">Delete this chat and all its local files?</string>
+    <string name="empty_chat_hint">Send text, voice notes, photos, videos, or files — or share items from other apps into this chat.</string>
+    <string name="message_hint">Message…</string>
+    <string name="recording_label">Recording…</string>
+    <string name="mic_permission_needed">Microphone permission is needed to record voice notes.</string>
+    <string name="lan_badge">LAN</string>
+    <string name="lan_share_title">Share on Local Network</string>
+    <string name="lan_share_desc">Anyone on the same Wi-Fi or Hotspot can open this chat without internet.</string>
+    <string name="lan_enable">Enable LAN sharing for this chat</string>
+    <string name="lan_host_url">Local Server Address</string>
+    <string name="lan_viewer_section">Viewer Link (Read &amp; Download only)</string>
+    <string name="lan_editor_section">Editor Link (Post, Edit &amp; Delete)</string>
+    <string name="lan_regenerate">Regenerate Links</string>
+    <string name="lan_no_wifi">Connect to Wi-Fi or turn on Hotspot to get a local IP address.</string>
+    <string name="join_lan_chat">Join LAN Chat</string>
+    <string name="join_lan_hint">Paste full link (http://192.168…/c/…) or enter Server URL + Code</string>
+    <string name="server_url_label">Server URL (e.g. http://192.168.1.5:8765)</string>
+    <string name="access_code_label">Access Code</string>
+    <string name="your_name_label">Your display name</string>
+    <string name="connect">Connect</string>
+    <string name="viewer_role">Viewer</string>
+    <string name="editor_role">Editor</string>
+    <string name="pick_chat_title">Save shared item to…</string>
+    <string name="create_and_save">New Chat &amp; Save</string>
+    <string name="saved_to_chat">Saved to %1$s</string>
+    <string name="copied">Copied</string>
+    <string name="notif_channel_lan">Local Network Sharing</string>
+    <string name="notif_lan_title">NearChat LAN Server Active</string>
+    <string name="notif_lan_text">Sharing %1$d chat(s) on %2$s</string>
+    <string name="stop_server">Stop</string>
+    <string name="items_count">%1$d items</string>
+    <string name="voice_note">Voice Note</string>
+    <string name="edit_message">Edit message</string>
+    <string name="refresh">Refresh</string>
+    <string name="uploading">Uploading…</string>
+    <string name="connection_error">Could not connect. Make sure both devices are on the same Wi-Fi or Hotspot.</string>
+    <string name="me_sender">Me</string>
+    <string name="close">Close</string>
+</resources>
