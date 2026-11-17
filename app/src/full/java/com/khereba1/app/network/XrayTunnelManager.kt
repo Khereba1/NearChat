@@ -58,6 +58,7 @@ data class XrayProfile(
 object XrayTunnelManager {
     private var commandServer: CommandServer? = null
     private var envInitialized = false
+    @Volatile private var lastCoreError: String = ""
     private val _state = MutableStateFlow(XrayState())
     val state: StateFlow<XrayState> = _state
 
@@ -104,7 +105,10 @@ object XrayTunnelManager {
         override fun getSystemProxyStatus(): SystemProxyStatus = SystemProxyStatus()
         override fun setSystemProxyEnabled(enabled: Boolean) {}
         override fun writeDebugMessage(message: String?) {
-            if (!message.isNullOrBlank()) AppLog.log("SINGBOX", message)
+            if (!message.isNullOrBlank()) {
+                lastCoreError = message
+                AppLog.log("SINGBOX", message)
+            }
         }
     }
 
@@ -187,6 +191,23 @@ object XrayTunnelManager {
             .edit().putString(PREF_PROFILES, arr.toString()).apply()
     }
 
+
+    private fun isPortOpen(port: Int): Boolean = runCatching {
+        java.net.Socket().use { s ->
+            s.connect(InetSocketAddress("127.0.0.1", port), 250)
+            true
+        }
+    }.getOrDefault(false)
+
+    private fun waitForPort(port: Int, timeoutMs: Long = 2500L): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (isPortOpen(port)) return true
+            Thread.sleep(150)
+        }
+        return false
+    }
+
     @Synchronized
     private fun getOrCreateServer(context: Context): CommandServer {
         ensureSetup(context)
@@ -207,9 +228,14 @@ object XrayTunnelManager {
             val wasRunning = _state.value.isRunning
             val cs = getOrCreateServer(context)
             if (!wasRunning) {
+                lastCoreError = ""
                 val cfg = buildConfigJson(rawInput.trim(), overrides, listenPort = LOCAL_SOCKS_PORT)
+                Libbox.checkConfig(cfg)
                 cs.startOrReloadService(cfg, OverrideOptions())
-                Thread.sleep(400)
+                if (!waitForPort(LOCAL_SOCKS_PORT, 3000L)) {
+                    val svcErr = runCatching { Libbox.readServiceError()?.value }.getOrNull().orEmpty()
+                    error(svcErr.ifBlank { lastCoreError }.ifBlank { "sing-box did not open port $LOCAL_SOCKS_PORT" })
+                }
             }
             try {
                 val t0 = System.currentTimeMillis()
@@ -246,10 +272,18 @@ object XrayTunnelManager {
         _state.value = XrayState(false, "Starting sing-box…")
         Thread {
             try {
+                lastCoreError = ""
                 val cs = getOrCreateServer(context)
                 val configJson = buildConfigJson(trimmed, overrides, listenPort = LOCAL_SOCKS_PORT)
+                Libbox.checkConfig(configJson)
                 cs.startOrReloadService(configJson, OverrideOptions())
-                _state.value = XrayState(true, "sing-box running on 127.0.0.1:$LOCAL_SOCKS_PORT")
+                if (waitForPort(LOCAL_SOCKS_PORT, 3000L)) {
+                    _state.value = XrayState(true, "sing-box running (HTTP+SOCKS5) on 127.0.0.1:$LOCAL_SOCKS_PORT")
+                } else {
+                    val svcErr = runCatching { Libbox.readServiceError()?.value }.getOrNull().orEmpty()
+                    val msg = svcErr.ifBlank { lastCoreError }.ifBlank { "Port $LOCAL_SOCKS_PORT failed to bind" }
+                    _state.value = XrayState(false, "Core error: $msg")
+                }
             } catch (e: Throwable) {
                 AppLog.log("SINGBOX", "Start failed", e)
                 _state.value = XrayState(false, "Error: ${e.message}")
@@ -286,7 +320,7 @@ object XrayTunnelManager {
         }
 
         val inbound = JSONObject()
-            .put("type", "socks")
+            .put("type", "mixed")
             .put("tag", "socks-in")
             .put("listen", "127.0.0.1")
             .put("listen_port", listenPort)
@@ -317,7 +351,7 @@ object XrayTunnelManager {
             }
             if (sbOutbounds.length() == 0) error("No supported outbound found in JSON")
             val inbound = JSONObject()
-                .put("type", "socks")
+                .put("type", "mixed")
                 .put("tag", "socks-in")
                 .put("listen", "127.0.0.1")
                 .put("listen_port", listenPort)
@@ -611,7 +645,7 @@ object XrayTunnelManager {
         val host = uri.host ?: error("Missing host")
         val port = if (uri.port > 0) uri.port else 1080
         return JSONObject()
-            .put("type", "socks")
+            .put("type", "mixed")
             .put("tag", "proxy")
             .put("server", host)
             .put("server_port", port)
