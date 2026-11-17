@@ -78,17 +78,21 @@
     <string name="bt_permission_needed">Bluetooth permission is needed to chat without Wi-Fi.</string>
     <string name="bt_no_paired">No paired Bluetooth devices found. Pair both phones in Android Settings first.</string>
     <string name="bt_tip">Works completely offline without Wi-Fi or Hotspot. Pair the two phones in Bluetooth settings, then one taps Host and the other Connects.</string>
-    <string name="router_title">Wi-Fi Repeater &amp; Proxy</string>
-    <string name="router_desc">Share this device\'s internet connection via a local HTTP/HTTPS Proxy (and Wi-Fi Direct group if hardware supports simultaneous Wi-Fi).</string>
+    <string name="router_title">Wi-Fi Repeater &amp; VPN</string>
+    <string name="router_desc">Share internet via Wi-Fi Direct + Proxy, or receive via VPN.</string>
     <string name="router_start">Start Router Bridge</string>
     <string name="router_stop">Stop Router Bridge</string>
     <string name="router_proxy_label">Proxy Address (set on client Wi-Fi):</string>
     <string name="router_p2p_label">Wi-Fi Direct Hotspot:</string>
-    <string name="router_hw_note">Note: On older single-chip devices without root, Android cannot broadcast a new Wi-Fi while already connected to Wi-Fi, so Wi-Fi Direct may fail; the Proxy still works over USB/Hotspot/LAN.</string>
+    <string name="router_hw_note">Tip: Disconnect Client VPN before starting Host Router on the same device.</string>
     <string name="router_custom_pass">Fixed Password (8+ chars)</string>
-    <string name="router_reset_group">Stop &amp; Reset Wi-Fi Group</string>
-    <string name="vpn_client_section">Client Mode (Receive Internet on 2nd Phone)</string>
+    <string name="router_reset_group">Reset Wi-Fi Group</string>
+    <string name="vpn_client_section">Client Mode (VPN)</string>
     <string name="vpn_host_ip">Host IP (default 192.168.49.1)</string>
     <string name="vpn_connect">Connect All Apps (VPN)</string>
     <string name="vpn_disconnect">Disconnect VPN</string>
+    <string name="hw_direct_supported">This device supports direct Wi-Fi Hotspot sharing (no Proxy/VPN needed).</string>
+    <string name="hw_p2p_recommended">Single-chip Wi-Fi detected — Wi-Fi Direct + Proxy mode is recommended.</string>
+    <string name="open_hotspot_settings">Open Hotspot Settings</string>
+    <string name="stop_vpn_first">Disconnect Client VPN first before starting Host Router.</string>
 </resources>

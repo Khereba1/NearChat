@@ -2,8 +2,10 @@ package com.khereba1.app.ui
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.VpnKey
+import androidx.compose.material.icons.rounded.WifiTethering
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -66,6 +69,7 @@ fun RouterBridgeDialog(
         mutableStateOf(prefs.getString("vpn_host_ip", "192.168.49.1") ?: "192.168.49.1")
     }
     val isVpnRunning by NearChatVpnService.isRunning.collectAsState()
+    val supportsDirectHotspot = remember { WifiProxyServer.supportsDirectWifiHotspot(context) }
 
     val vpnPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -90,11 +94,36 @@ fun RouterBridgeDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = stringResource(R.string.router_desc),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = stringResource(
+                                if (supportsDirectHotspot) R.string.hw_direct_supported
+                                else R.string.hw_p2p_recommended
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (supportsDirectHotspot) {
+                            OutlinedButton(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Rounded.WifiTethering, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.open_hotspot_settings))
+                            }
+                        }
+                    }
+                }
 
                 if (!state.isRunning && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     OutlinedTextField(
@@ -121,7 +150,7 @@ fun RouterBridgeDialog(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "HTTP Proxy (Wi-Fi Settings):",
+                                        text = "HTTP Proxy:",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -134,7 +163,7 @@ fun RouterBridgeDialog(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "SOCKS5 (Telegram / Client VPN):",
+                                        text = "SOCKS5 (Telegram / VPN):",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -182,14 +211,19 @@ fun RouterBridgeDialog(
                     OutlinedButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.router_stop))
                     }
-                    TextButton(
-                        onClick = { WifiProxyServer.stop(keepGroup = false) },
+                } else {
+                    if (isVpnRunning) {
+                        Text(
+                            text = stringResource(R.string.stop_vpn_first),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Button(
+                        enabled = !isVpnRunning,
+                        onClick = onStart,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(stringResource(R.string.router_reset_group))
-                    }
-                } else {
-                    Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Rounded.Router, contentDescription = null)
                         Spacer(Modifier.width(6.dp))
                         Text(stringResource(R.string.router_start))
@@ -215,6 +249,7 @@ fun RouterBridgeDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Button(
+                        enabled = !state.isRunning,
                         onClick = {
                             val prep = VpnService.prepare(context)
                             if (prep != null) {

@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.PowerManager
 import com.khereba1.app.AppLog
 import com.khereba1.app.PREFS
+import com.khereba1.app.data.NearChatDb
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.ByteArrayOutputStream
@@ -54,6 +55,19 @@ object WifiProxyServer {
 
     private val _state = MutableStateFlow(RouterBridgeState())
     val state: StateFlow<RouterBridgeState> = _state
+
+    fun supportsDirectWifiHotspot(context: Context): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                wm?.isStaApConcurrencySupported == true
+            } else {
+                false
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
 
     @SuppressLint("MissingPermission", "WakelockTimeout")
     fun start(context: Context, preferredPort: Int = 8899, preferredSocksPort: Int = 1080) {
@@ -237,7 +251,7 @@ object WifiProxyServer {
         }
     }
 
-    fun stop(keepGroup: Boolean = true) {
+    fun stop(keepGroup: Boolean = false) {
         running.set(false)
         mainHandler.removeCallbacksAndMessages(null)
         releaseLocks()
@@ -247,15 +261,26 @@ object WifiProxyServer {
         socksSocket = null
         try { pool?.shutdownNow() } catch (_: Throwable) {}
         pool = null
+
+        val ctx = appContext
         if (!keepGroup) {
             try {
                 val mgr = p2pManager
-                val ch = p2pChannel
+                    ?: (ctx?.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager)
+                val ch = p2pChannel ?: mgr?.initialize(ctx, Looper.getMainLooper(), null)
                 if (mgr != null && ch != null) {
                     mgr.removeGroup(ch, null)
                 }
             } catch (_: Throwable) {}
             p2pChannel = null
+        }
+
+        if (ctx != null) {
+            try {
+                if (NearChatDb.get(ctx).getSharedChatsCount() == 0) {
+                    LanShareService.stop(ctx)
+                }
+            } catch (_: Throwable) {}
         }
         _state.value = RouterBridgeState(isRunning = false)
     }
@@ -273,9 +298,17 @@ object WifiProxyServer {
         val ctx = appContext ?: return null
         return try {
             val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val net = cm.activeNetwork ?: return null
-            val caps = cm.getNetworkCapabilities(net) ?: return null
-            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) net else null
+            @Suppress("DEPRECATION")
+            val allNets = cm.allNetworks
+            var fallback: Network? = null
+            for (net in allNets) {
+                val caps = cm.getNetworkCapabilities(net) ?: continue
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return net
+                if (fallback == null) fallback = net
+            }
+            fallback
         } catch (_: Throwable) {
             null
         }
@@ -418,7 +451,7 @@ object WifiProxyServer {
 
             val ctrlMonitor = Thread {
                 try {
-                    while (inS.read() != -1) { /* keep watching TCP control socket */ }
+                    while (inS.read() != -1) { }
                 } catch (_: Throwable) {
                 } finally {
                     relayActive.set(false)

@@ -74,17 +74,21 @@
     <string name="bt_permission_needed">محتاج صلاحية البلوتوث للدردشة بدون واي فاي.</string>
     <string name="bt_no_paired">مفيش أجهزة مقترنة. اعمل اقتران بين الموبايلين من إعدادات البلوتوث الأول.</string>
     <string name="bt_tip">يشتغل بدون واي فاي أو شبكة تماماً. اعمل اقتران بين الجهازين في الإعدادات، وبعدين واحد يضغط استضافة والتاني اتصال.</string>
-    <string name="router_title">مكرر واي فاي وبروكسي</string>
-    <string name="router_desc">مشاركة إنترنت الجهاز عبر Proxy محلي (مع شبكة Wi-Fi Direct لو الهاردوير بيدعم واي فاي مزدوج).</string>
+    <string name="router_title">مكرر واي فاي و VPN</string>
+    <string name="router_desc">بث النت عبر Wi-Fi Direct + بروكسي، أو استقباله عبر VPN.</string>
     <string name="router_start">تشغيل الراوتر</string>
     <string name="router_stop">إيقاف الراوتر</string>
     <string name="router_proxy_label">عنوان البروكسي (يتحط في واي فاي الجهاز التاني):</string>
     <string name="router_p2p_label">شبكة Wi-Fi Direct:</string>
-    <string name="router_hw_note">ملحوظة: الأجهزة القديمة بشريحة واي فاي واحدة بدون روت مبتقدرش تبث واي فاي جديد وهي متصلة بواي فاي تاني، لكن البروكسي يشتغل على الشبكة أو USB.</string>
+    <string name="router_hw_note">ملحوظة: افصل وضع المستقبل (VPN) الأول قبل ما تشغّل البث على نفس الجهاز.</string>
     <string name="router_custom_pass">كلمة سر ثابتة (8 أحرف فأكثر)</string>
-    <string name="router_reset_group">إيقاف وإعادة تعيين الشبكة</string>
-    <string name="vpn_client_section">وضع المستقبل (تشغيل كل التطبيقات على الموبايل التاني)</string>
-    <string name="vpn_host_ip">عنوان الجهاز المضيف (الافتراضي 192.168.49.1)</string>
+    <string name="router_reset_group">إعادة تعيين الشبكة</string>
+    <string name="vpn_client_section">وضع المستقبل (VPN)</string>
+    <string name="vpn_host_ip">عنوان المضيف (الافتراضي 192.168.49.1)</string>
     <string name="vpn_connect">تشغيل الإنترنت لكل التطبيقات (VPN)</string>
     <string name="vpn_disconnect">إيقاف الـ VPN</string>
+    <string name="hw_direct_supported">جهازك بيدعم بث Hotspot مباشر من الواي فاي (بدون بروكسي أو VPN).</string>
+    <string name="hw_p2p_recommended">جهازك بشريحة واحدة — الأنسب استخدام وضع Wi-Fi Direct + البروكسي.</string>
+    <string name="open_hotspot_settings">فتح إعدادات نقطة الاتصال</string>
+    <string name="stop_vpn_first">افصل الـ VPN الأول قبل تشغيل البث على نفس الجهاز.</string>
 </resources>

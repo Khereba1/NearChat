@@ -23,11 +23,13 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.khereba1.app.data.ChatMessage
 import com.khereba1.app.data.ChatRoom
 import com.khereba1.app.data.MessageType
 import com.khereba1.app.data.NearChatDb
@@ -85,8 +87,15 @@ class MainActivity : ComponentActivity() {
                 val routerState by WifiProxyServer.state.collectAsState()
                 val btState by btManager.state.collectAsState()
 
-                val chats = remember(dbVersion) { db.getAllChats() }
-                val storageBytes = remember(dbVersion) { db.getTotalStorageBytes() }
+                var chats by remember { mutableStateOf<List<ChatRoom>>(emptyList()) }
+                var storageBytes by remember { mutableLongStateOf(0L) }
+                LaunchedEffect(dbVersion) {
+                    val (loadedChats, loadedBytes) = withContext(Dispatchers.IO) {
+                        db.getAllChats() to db.getTotalStorageBytes()
+                    }
+                    chats = loadedChats
+                    storageBytes = loadedBytes
+                }
 
                 var activeChatId by remember { mutableStateOf<String?>(null) }
                 var remoteSession by remember { mutableStateOf<Pair<RemoteChatInfo, String>?>(null) }
@@ -143,7 +152,8 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
-                    if (db.getSharedChatsCount() > 0 && !lanState.isRunning) {
+                    val sharedCount = withContext(Dispatchers.IO) { db.getSharedChatsCount() }
+                    if (sharedCount > 0 && !lanState.isRunning) {
                         LanShareService.start(this@MainActivity)
                     }
                 }
@@ -159,11 +169,11 @@ class MainActivity : ComponentActivity() {
                     targetState = currentRoute,
                     transitionSpec = {
                         if (targetState != NavRoute.Home) {
-                            (slideInHorizontally(tween(260)) { it / 3 } + fadeIn(tween(220))) togetherWith
-                                (slideOutHorizontally(tween(260)) { -it / 4 } + fadeOut(tween(180)))
+                            (slideInHorizontally(tween(220)) { it / 3 } + fadeIn(tween(180))) togetherWith
+                                (slideOutHorizontally(tween(220)) { -it / 4 } + fadeOut(tween(140)))
                         } else {
-                            (slideInHorizontally(tween(260)) { -it / 3 } + fadeIn(tween(220))) togetherWith
-                                (slideOutHorizontally(tween(260)) { it / 3 } + fadeOut(tween(180)))
+                            (slideInHorizontally(tween(220)) { -it / 3 } + fadeIn(tween(180))) togetherWith
+                                (slideOutHorizontally(tween(220)) { it / 3 } + fadeOut(tween(140)))
                         }
                     },
                     label = "screen_nav"
@@ -195,7 +205,12 @@ class MainActivity : ComponentActivity() {
 
                         is NavRoute.LocalChat -> {
                             val activeRoom: ChatRoom = chats.first { it.id == route.chatId }
-                            val messages = remember(dbVersion, activeRoom.id) { db.getMessages(activeRoom.id) }
+                            var messages by remember(activeRoom.id) { mutableStateOf<List<ChatMessage>>(emptyList()) }
+                            LaunchedEffect(dbVersion, activeRoom.id) {
+                                messages = withContext(Dispatchers.IO) {
+                                    db.getMessages(activeRoom.id)
+                                }
+                            }
                             ChatScreen(
                                 room = activeRoom,
                                 messages = messages,
@@ -211,7 +226,9 @@ class MainActivity : ComponentActivity() {
                                     activeChatId = null
                                 },
                                 onSendText = { txt ->
-                                    db.insertTextMessage(activeRoom.id, txt, getString(R.string.me_sender))
+                                    scope.launch(Dispatchers.IO) {
+                                        db.insertTextMessage(activeRoom.id, txt, getString(R.string.me_sender))
+                                    }
                                 },
                                 onPickAttachments = {
                                     attachmentPicker.launch(arrayOf("*/*"))
@@ -238,22 +255,28 @@ class MainActivity : ComponentActivity() {
                                     val res = recorder.stop()
                                     if (res != null) {
                                         val (file, dur) = res
-                                        db.insertMediaMessage(
-                                            chatId = activeRoom.id,
-                                            type = MessageType.AUDIO,
-                                            fileName = file.name,
-                                            mime = "audio/mp4",
-                                            size = file.length(),
-                                            durationMs = dur,
-                                            senderName = getString(R.string.me_sender)
-                                        )
+                                        scope.launch(Dispatchers.IO) {
+                                            db.insertMediaMessage(
+                                                chatId = activeRoom.id,
+                                                type = MessageType.AUDIO,
+                                                fileName = file.name,
+                                                mime = "audio/mp4",
+                                                size = file.length(),
+                                                durationMs = dur,
+                                                senderName = getString(R.string.me_sender)
+                                            )
+                                        }
                                     }
                                 },
                                 onEditMessage = { msgId, newText ->
-                                    db.updateMessageText(msgId, newText)
+                                    scope.launch(Dispatchers.IO) {
+                                        db.updateMessageText(msgId, newText)
+                                    }
                                 },
                                 onDeleteMessage = { msgId ->
-                                    db.deleteMessage(msgId)
+                                    scope.launch(Dispatchers.IO) {
+                                        db.deleteMessage(msgId)
+                                    }
                                 },
                                 onToggleLanShare = { enabled ->
                                     if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -265,15 +288,22 @@ class MainActivity : ComponentActivity() {
                                             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                                         }
                                     }
-                                    db.updateLanSharing(activeRoom.id, enabled)
-                                    if (db.getSharedChatsCount() > 0) {
-                                        LanShareService.start(this@MainActivity)
-                                    } else {
-                                        LanShareService.stop(this@MainActivity)
+                                    scope.launch(Dispatchers.IO) {
+                                        db.updateLanSharing(activeRoom.id, enabled)
+                                        val count = db.getSharedChatsCount()
+                                        withContext(Dispatchers.Main) {
+                                            if (count > 0) {
+                                                LanShareService.start(this@MainActivity)
+                                            } else if (!WifiProxyServer.state.value.isRunning) {
+                                                LanShareService.stop(this@MainActivity)
+                                            }
+                                        }
                                     }
                                 },
                                 onRegenerateTokens = {
-                                    db.regenerateTokens(activeRoom.id)
+                                    scope.launch(Dispatchers.IO) {
+                                        db.regenerateTokens(activeRoom.id)
+                                    }
                                 }
                             )
                         }
@@ -287,14 +317,25 @@ class MainActivity : ComponentActivity() {
                                 currentLang = currentLang,
                                 onOpenChat = { room -> activeChatId = room.id },
                                 onCreateChat = { title, desc, colorIdx ->
-                                    val created = db.createChat(title, desc, colorIdx)
-                                    activeChatId = created.id
+                                    scope.launch {
+                                        val created = withContext(Dispatchers.IO) {
+                                            db.createChat(title, desc, colorIdx)
+                                        }
+                                        activeChatId = created.id
+                                    }
                                 },
-                                onRenameChat = { id, newTitle -> db.renameChat(id, newTitle) },
+                                onRenameChat = { id, newTitle ->
+                                    scope.launch(Dispatchers.IO) { db.renameChat(id, newTitle) }
+                                },
                                 onDeleteChat = { id ->
-                                    db.deleteChat(id)
-                                    if (db.getSharedChatsCount() == 0) {
-                                        LanShareService.stop(this@MainActivity)
+                                    scope.launch(Dispatchers.IO) {
+                                        db.deleteChat(id)
+                                        val count = db.getSharedChatsCount()
+                                        if (count == 0 && !WifiProxyServer.state.value.isRunning) {
+                                            withContext(Dispatchers.Main) {
+                                                LanShareService.stop(this@MainActivity)
+                                            }
+                                        }
                                     }
                                 },
                                 onJoinLan = { urlOrLink, code, displayName ->
@@ -340,7 +381,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                     routerPermLauncher.launch(perms)
                                 },
-                                onStopRouter = { WifiProxyServer.stop() },
+                                onStopRouter = { WifiProxyServer.stop(keepGroup = false) },
                                 onChangeLanguage = { lang ->
                                     prefs.edit().putString("lang", lang).apply()
                                     currentLang = lang
@@ -369,7 +410,7 @@ class MainActivity : ComponentActivity() {
                         onCreateNewAndSave = { title ->
                             pendingShareState.value = null
                             scope.launch {
-                                val room = db.createChat(title)
+                                val room = withContext(Dispatchers.IO) { db.createChat(title) }
                                 savePendingShare(db, room.id, share)
                                 activeChatId = room.id
                                 Toast.makeText(
