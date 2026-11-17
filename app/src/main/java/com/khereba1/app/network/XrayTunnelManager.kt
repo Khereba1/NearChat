@@ -13,8 +13,18 @@ import libv2ray.CoreController
 import libv2ray.Libv2ray
 import org.json.JSONArray
 import org.json.JSONObject
+import android.annotation.SuppressLint
+import java.net.InetSocketAddress
 import java.net.URI
 import java.net.URLDecoder
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.SNIHostName
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -138,16 +148,10 @@ object XrayTunnelManager {
             return
         }
 
-        val configJson = try {
-            buildConfigJson(trimmed, overrides)
-        } catch (e: Throwable) {
-            AppLog.log("XRAY", "Config parse error", e)
-            _state.value = XrayState(false, "Invalid config: ${e.message}")
-            return
-        }
-
+        _state.value = XrayState(false, "Connecting…")
         Thread {
             try {
+                val configJson = buildConfigJson(trimmed, overrides)
                 if (!envInitialized) {
                     Libv2ray.initCoreEnv(context.filesDir.absolutePath, "")
                     envInitialized = true
@@ -217,19 +221,55 @@ object XrayTunnelManager {
     }
 
 
+
+    @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
+    private fun fetchServerCertSha256(host: String, port: Int, sni: String): String? {
+        if (host.isBlank() || port !in 1..65535) return null
+        return runCatching {
+            val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+            })
+            val sslCtx = SSLContext.getInstance("TLS")
+            sslCtx.init(null, trustAll, SecureRandom())
+            val sock = sslCtx.socketFactory.createSocket() as SSLSocket
+            sock.use { s ->
+                s.soTimeout = 4000
+                if (sni.isNotBlank() && !sni.all { it.isDigit() || it == '.' || it == ':' }) {
+                    val params = s.sslParameters
+                    params.serverNames = listOf(SNIHostName(sni))
+                    s.sslParameters = params
+                }
+                s.connect(InetSocketAddress(host, port), 4000)
+                s.startHandshake()
+                val cert = s.session.peerCertificates.firstOrNull() ?: return null
+                val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
+                digest.joinToString("") { "%02x".format(it) }
+            }
+        }.onFailure { e ->
+            AppLog.log("XRAY", "Cert SHA-256 probe failed for $host:$port", e)
+        }.getOrNull()
+    }
+
     private fun sanitizeJsonConfig(root: JSONObject, overrides: XrayOverrides) {
         val outbounds = root.optJSONArray("outbounds") ?: return
         for (i in 0 until outbounds.length()) {
             val ob = outbounds.optJSONObject(i) ?: continue
             val settings = ob.optJSONObject("settings")
             var serverAddr = ""
+            var serverPort = 443
             val vnext = settings?.optJSONArray("vnext")
             if (vnext != null && vnext.length() > 0) {
-                serverAddr = vnext.optJSONObject(0)?.optString("address", "") ?: ""
+                val v0 = vnext.optJSONObject(0)
+                serverAddr = v0?.optString("address", "") ?: ""
+                serverPort = v0?.optInt("port", 443) ?: 443
             } else {
                 val servers = settings?.optJSONArray("servers")
                 if (servers != null && servers.length() > 0) {
-                    serverAddr = servers.optJSONObject(0)?.optString("address", "") ?: ""
+                    val s0 = servers.optJSONObject(0)
+                    serverAddr = s0?.optString("address", "") ?: ""
+                    serverPort = s0?.optInt("port", 443) ?: 443
                 }
             }
             val stream = ob.optJSONObject("streamSettings") ?: continue
@@ -251,14 +291,14 @@ object XrayTunnelManager {
                 if (sniOv.isNotEmpty()) {
                     tls.put("serverName", sniOv)
                 }
-                val currentSni = tls.optString("serverName", "")
-                if ((hadInsecure || overrides.allowInsecure) &&
-                    !tls.has("verifyPeerCertByName") &&
-                    !tls.has("pinnedPeerCertSha256") &&
-                    serverAddr.isNotBlank() &&
-                    !serverAddr.equals(currentSni, ignoreCase = true)
-                ) {
-                    tls.put("verifyPeerCertByName", serverAddr)
+                val currentSni = tls.optString("serverName", "").ifBlank { serverAddr }
+                if ((hadInsecure || overrides.allowInsecure) && !tls.has("pinnedPeerCertSha256")) {
+                    val sha = fetchServerCertSha256(serverAddr, serverPort, currentSni)
+                    if (!sha.isNullOrBlank()) {
+                        tls.put("pinnedPeerCertSha256", sha)
+                    } else if (!tls.has("verifyPeerCertByName") && serverAddr.isNotBlank() && !serverAddr.equals(currentSni, ignoreCase = true)) {
+                        tls.put("verifyPeerCertByName", serverAddr)
+                    }
                 }
             }
         }
@@ -277,6 +317,7 @@ object XrayTunnelManager {
     private fun buildStreamSettings(
         q: Map<String, String>,
         defaultHost: String,
+        defaultPort: Int,
         overrides: XrayOverrides
     ): JSONObject {
         val network = (q["type"] ?: "tcp").lowercase()
@@ -314,17 +355,21 @@ object XrayTunnelManager {
         when (security) {
             "tls" -> {
                 val tls = JSONObject().put("serverName", effectiveSni)
-                val pcs = q["pcs"] ?: q["pinnedPeerCertSha256"]
+                var pcs = q["pcs"] ?: q["pinnedPeerCertSha256"]
+                if (pcs.isNullOrBlank() && effectiveInsecure) {
+                    pcs = fetchServerCertSha256(defaultHost, defaultPort, effectiveSni)
+                }
                 if (!pcs.isNullOrBlank()) {
                     tls.put("pinnedPeerCertSha256", pcs)
-                }
-                val vcn = (q["vcn"] ?: q["verifyPeerCertByName"]).orEmpty().ifBlank {
-                    if (effectiveInsecure && defaultHost.isNotBlank() && !defaultHost.equals(effectiveSni, ignoreCase = true)) {
-                        defaultHost
-                    } else ""
-                }
-                if (vcn.isNotBlank()) {
-                    tls.put("verifyPeerCertByName", vcn)
+                } else {
+                    val vcn = (q["vcn"] ?: q["verifyPeerCertByName"]).orEmpty().ifBlank {
+                        if (effectiveInsecure && defaultHost.isNotBlank() && !defaultHost.equals(effectiveSni, ignoreCase = true)) {
+                            defaultHost
+                        } else ""
+                    }
+                    if (vcn.isNotBlank()) {
+                        tls.put("verifyPeerCertByName", vcn)
+                    }
                 }
                 val fp = q["fp"]
                 if (!fp.isNullOrBlank()) tls.put("fingerprint", fp)
@@ -368,7 +413,7 @@ object XrayTunnelManager {
             .put("tag", "proxy")
             .put("protocol", "vless")
             .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
-            .put("streamSettings", buildStreamSettings(q, host, overrides))
+            .put("streamSettings", buildStreamSettings(q, host, port, overrides))
     }
 
     private fun parseVmess(raw: String, overrides: XrayOverrides): JSONObject {
@@ -403,7 +448,7 @@ object XrayTunnelManager {
             .put("tag", "proxy")
             .put("protocol", "vmess")
             .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
-            .put("streamSettings", buildStreamSettings(q, host, overrides))
+            .put("streamSettings", buildStreamSettings(q, host, port, overrides))
     }
 
     private fun parseTrojan(raw: String, overrides: XrayOverrides): JSONObject {
@@ -423,7 +468,7 @@ object XrayTunnelManager {
             .put("tag", "proxy")
             .put("protocol", "trojan")
             .put("settings", JSONObject().put("servers", JSONArray().put(server)))
-            .put("streamSettings", buildStreamSettings(q, host, overrides))
+            .put("streamSettings", buildStreamSettings(q, host, port, overrides))
     }
 
     private fun parseShadowsocks(raw: String): JSONObject {
