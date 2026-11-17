@@ -296,7 +296,6 @@ object WifiProxyServer {
         _state.value = RouterBridgeState(isRunning = false)
     }
 
-
     @SuppressLint("MissingPermission")
     fun resetP2pGroup(context: Context) {
         try {
@@ -473,6 +472,37 @@ object WifiProxyServer {
         }
     }
 
+    /**
+     * Resolves a raw DNS payload over TCP (RFC 1035 2-byte length prefix) via the upstream SOCKS5
+     * tunnel (sing-box) so Wi-Fi Direct hotspot clients get working DNS even when UDP is blocked.
+     */
+    private fun queryDnsOverUpstreamTcp(dnsServerIp: String, queryPayload: ByteArray): ByteArray? {
+        if (upstreamHost.isEmpty() || upstreamPort !in 1..65535) return null
+        return try {
+            openViaUpstreamSocks5(upstreamHost, upstreamPort, dnsServerIp, 53).use { s ->
+                s.soTimeout = 5000
+                val out = s.getOutputStream()
+                val inp = s.getInputStream()
+                val len = queryPayload.size
+                val framed = ByteArray(2 + len)
+                framed[0] = ((len shr 8) and 0xFF).toByte()
+                framed[1] = (len and 0xFF).toByte()
+                System.arraycopy(queryPayload, 0, framed, 2, len)
+                out.write(framed)
+                out.flush()
+                val lenBuf = ByteArray(2)
+                readExact(inp, lenBuf)
+                val respLen = ((lenBuf[0].toInt() and 0xFF) shl 8) or (lenBuf[1].toInt() and 0xFF)
+                if (respLen !in 1..8192) return null
+                val resp = ByteArray(respLen)
+                readExact(inp, resp)
+                resp
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun handleSocks5UdpAssociate(ctrl: Socket, inS: InputStream, outS: OutputStream) {
         val localUdp = DatagramSocket(0, InetAddress.getByName("0.0.0.0")).apply {
             soTimeout = 120_000
@@ -534,7 +564,8 @@ object WifiProxyServer {
             while (relayActive.get()) {
                 val pkt = DatagramPacket(buf, buf.size)
                 localUdp.receive(pkt)
-                clientAddr = InetSocketAddress(pkt.address, pkt.port)
+                val currentClient = InetSocketAddress(pkt.address, pkt.port)
+                clientAddr = currentClient
                 val len = pkt.length
                 if (len < 10) continue
                 val atyp = buf[3].toInt() and 0xFF
@@ -559,6 +590,24 @@ object WifiProxyServer {
                 offset += 2
                 val payloadLen = len - offset
                 if (payloadLen <= 0) continue
+
+                if (dstPort == 53 && upstreamHost.isNotEmpty() && upstreamPort in 1..65535) {
+                    val dnsQuery = buf.copyOfRange(offset, offset + payloadLen)
+                    val srcIp = dstAddr.address
+                    pool?.execute {
+                        val resp = queryDnsOverUpstreamTcp("1.1.1.1", dnsQuery)
+                        if (resp != null && srcIp.size == 4) {
+                            val wrapped = ByteArray(10 + resp.size)
+                            wrapped[0] = 0; wrapped[1] = 0; wrapped[2] = 0; wrapped[3] = 0x01
+                            System.arraycopy(srcIp, 0, wrapped, 4, 4)
+                            wrapped[8] = 0
+                            wrapped[9] = 53
+                            System.arraycopy(resp, 0, wrapped, 10, resp.size)
+                            runCatching { localUdp.send(DatagramPacket(wrapped, wrapped.size, currentClient)) }
+                        }
+                    }
+                    continue
+                }
                 outUdp.send(DatagramPacket(buf, offset, payloadLen, dstAddr, dstPort))
             }
         } catch (_: Throwable) {

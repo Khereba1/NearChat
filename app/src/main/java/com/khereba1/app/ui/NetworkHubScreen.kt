@@ -64,8 +64,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -105,6 +105,7 @@ fun NetworkHubScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val appContext = context.applicationContext
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -176,7 +177,7 @@ fun NetworkHubScreen(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
         if (res.resultCode == Activity.RESULT_OK) {
-            NearChatVpnService.start(context, pendingVpnHost, pendingVpnPort)
+            NearChatVpnService.start(appContext, pendingVpnHost, pendingVpnPort)
         }
     }
 
@@ -187,7 +188,35 @@ fun NetworkHubScreen(
         if (prep != null) {
             vpnPermLauncher.launch(prep)
         } else {
-            NearChatVpnService.start(context, pendingVpnHost, pendingVpnPort)
+            NearChatVpnService.start(appContext, pendingVpnHost, pendingVpnPort)
+        }
+    }
+
+    val launchSingBoxAndVpn: () -> Unit = {
+        val localAddr = "127.0.0.1:${XrayTunnelManager.LOCAL_SOCKS_PORT}"
+        upstreamSocks = localAddr
+        prefs.edit().putString("upstream_socks", localAddr).apply()
+        val shouldStartVpn = autoStartVpn && !routerState.isRunning
+        if (shouldStartVpn) {
+            clientHostIp = "127.0.0.1"
+            clientPort = XrayTunnelManager.LOCAL_SOCKS_PORT.toString()
+            prefs.edit()
+                .putString("vpn_host_ip", clientHostIp)
+                .putString("vpn_host_port", clientPort)
+                .apply()
+        }
+        XrayTunnelManager.start(appContext, xrayConfig, currentOverrides) {
+            if (shouldStartVpn) {
+                NearChatVpnService.start(appContext, "127.0.0.1", XrayTunnelManager.LOCAL_SOCKS_PORT)
+            }
+        }
+    }
+
+    val xrayVpnPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            launchSingBoxAndVpn()
         }
     }
 
@@ -861,19 +890,14 @@ fun NetworkHubScreen(
                             if (!xrayState.isRunning) {
                                 Button(
                                     onClick = {
-                                        val localAddr = "127.0.0.1:${XrayTunnelManager.LOCAL_SOCKS_PORT}"
-                                        upstreamSocks = localAddr
-                                        prefs.edit().putString("upstream_socks", localAddr).apply()
-                                        XrayTunnelManager.start(context, xrayConfig, currentOverrides) {
-                                            if (autoStartVpn && !routerState.isRunning) {
-                                                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                                    clientHostIp = "127.0.0.1"
-                                                    clientPort = XrayTunnelManager.LOCAL_SOCKS_PORT.toString()
-                                                    prefs.edit().putString("vpn_host_ip", clientHostIp).putString("vpn_host_port", clientPort).apply()
-                                                    startVpnWithTarget("127.0.0.1", XrayTunnelManager.LOCAL_SOCKS_PORT)
-                                                }
+                                        if (autoStartVpn && !routerState.isRunning) {
+                                            val prep = VpnService.prepare(context)
+                                            if (prep != null) {
+                                                xrayVpnPermLauncher.launch(prep)
+                                                return@Button
                                             }
                                         }
+                                        launchSingBoxAndVpn()
                                     },
                                     modifier = Modifier.weight(1f)
                                 ) {
@@ -885,7 +909,7 @@ fun NetworkHubScreen(
                                 Button(
                                     onClick = {
                                         XrayTunnelManager.stop()
-                                        if (isVpnRunning && clientHostIp == "127.0.0.1") {
+                                        if (isVpnRunning) {
                                             NearChatVpnService.stop(context)
                                         }
                                     },

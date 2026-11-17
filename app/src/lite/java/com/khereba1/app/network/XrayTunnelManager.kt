@@ -72,24 +72,31 @@ object XrayTunnelManager {
                 allowInsecure = overrides.allowInsecure
             )
         )
-        val arr = JSONArray()
-        for (p in list) {
-            arr.put(JSONObject().put("id", p.id).put("name", p.name).put("config", p.config))
-        }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString(PREF_PROFILES, arr.toString()).apply()
+        persistProfiles(context, list)
         return list
     }
 
     fun deleteProfile(context: Context, id: String): List<XrayProfile> {
         val list = loadProfiles(context).filterNot { it.id == id }
+        persistProfiles(context, list)
+        return list
+    }
+
+    private fun persistProfiles(context: Context, list: List<XrayProfile>) {
         val arr = JSONArray()
         for (p in list) {
-            arr.put(JSONObject().put("id", p.id).put("name", p.name).put("config", p.config))
+            arr.put(
+                JSONObject()
+                    .put("id", p.id)
+                    .put("name", p.name)
+                    .put("config", p.config)
+                    .put("hostOverride", p.hostOverride)
+                    .put("sniOverride", p.sniOverride)
+                    .put("allowInsecure", p.allowInsecure)
+            )
         }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(PREF_PROFILES, arr.toString()).apply()
-        return list
     }
 
     suspend fun testPing(

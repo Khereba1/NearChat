@@ -13,8 +13,8 @@ android {
         applicationId = "com.khereba1.nearchat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 34
-        versionName = "2.1.3"
+        versionCode = 35
+        versionName = "2.1.4"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }

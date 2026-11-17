@@ -28,6 +28,8 @@ class NearChatVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
     private var watchJob: Job? = null
+    private var currentHostIp: String = ""
+    private var currentSocksPort: Int = 0
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     companion object {
@@ -53,20 +55,22 @@ class NearChatVpnService : VpnService() {
         }
 
         fun start(context: Context, hostIp: String, socksPort: Int = 1080) {
-            val intent = Intent(context, NearChatVpnService::class.java).apply {
+            val appContext = context.applicationContext
+            val intent = Intent(appContext, NearChatVpnService::class.java).apply {
                 putExtra(EXTRA_HOST_IP, hostIp)
                 putExtra(EXTRA_SOCKS_PORT, socksPort)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
+                appContext.startForegroundService(intent)
             } else {
-                context.startService(intent)
+                appContext.startService(intent)
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, NearChatVpnService::class.java).setAction(ACTION_STOP)
-            context.startService(intent)
+            val appContext = context.applicationContext
+            val intent = Intent(appContext, NearChatVpnService::class.java).setAction(ACTION_STOP)
+            appContext.startService(intent)
         }
     }
 
@@ -84,13 +88,19 @@ class NearChatVpnService : VpnService() {
             return START_NOT_STICKY
         }
         if (intent.action == ACTION_STOP) {
+            val wasLocalCore = currentHostIp == "127.0.0.1" && currentSocksPort == XrayTunnelManager.LOCAL_SOCKS_PORT
             stopTunnel()
+            if (wasLocalCore) {
+                runCatching { XrayTunnelManager.stop() }
+            }
             stopSelf()
             return START_NOT_STICKY
         }
 
         val hostIp = intent.getStringExtra(EXTRA_HOST_IP)?.trim()?.ifEmpty { "192.168.49.1" } ?: "192.168.49.1"
         val socksPort = intent.getIntExtra(EXTRA_SOCKS_PORT, 1080).coerceIn(1, 65535)
+        currentHostIp = hostIp
+        currentSocksPort = socksPort
 
         ensureChannel()
         val openIntent = PendingIntent.getActivity(
@@ -115,7 +125,7 @@ class NearChatVpnService : VpnService() {
             .build()
         startForeground(NOTIF_ID, notif)
 
-        startTunnel(hostIp, socksPort)
+        startTunnel(hostIp, socksPort, openIntent)
         watchLocalTunnel(hostIp, socksPort)
         return START_NOT_STICKY
     }
@@ -143,10 +153,11 @@ class NearChatVpnService : VpnService() {
         }
     }
 
-    private fun startTunnel(hostIp: String, socksPort: Int) {
+    private fun startTunnel(hostIp: String, socksPort: Int, configureIntent: PendingIntent) {
         stopTunnel()
         try {
             val builder = Builder()
+                .setConfigureIntent(configureIntent)
                 .setSession("NearChat VPN")
                 .setMtu(1500)
                 .addAddress("10.10.10.2", 24)
@@ -154,6 +165,10 @@ class NearChatVpnService : VpnService() {
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1")
                 .addDisallowedApplication(packageName)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.setMetered(false)
+            }
 
             val phys = PhysicalNetwork.current(this)
             if (phys != null) {
