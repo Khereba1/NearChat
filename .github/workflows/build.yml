@@ -81,7 +81,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-NAME="${GH_REPO##*/}"
+          NAME="${GH_REPO##*/}"
           cp app/build/outputs/apk/full/release/*.apk "$NAME.apk"
           cp app/build/outputs/apk/lite/release/*.apk "$NAME-Lite.apk"
           gh release delete latest --yes --cleanup-tag || true
