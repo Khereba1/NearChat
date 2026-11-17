@@ -1,40 +1,36 @@
 package com.khereba1.app.network
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.DnsResolver
+import android.os.Build
+import android.os.CancellationSignal
+import android.system.ErrnoException
 import android.util.Base64
+import androidx.annotation.RequiresApi
 import com.khereba1.app.AppLog
 import com.khereba1.app.PREFS
-import io.nekohasekai.libbox.CommandServer
-import io.nekohasekai.libbox.CommandServerHandler
-import io.nekohasekai.libbox.ConnectionOwner
-import io.nekohasekai.libbox.InterfaceUpdateListener
-import io.nekohasekai.libbox.Libbox
-import io.nekohasekai.libbox.LocalDNSTransport
-import io.nekohasekai.libbox.NetworkInterfaceIterator
-import io.nekohasekai.libbox.Notification
-import io.nekohasekai.libbox.OverrideOptions
-import io.nekohasekai.libbox.PlatformInterface
-import io.nekohasekai.libbox.SetupOptions
-import io.nekohasekai.libbox.StringIterator
-import io.nekohasekai.libbox.SystemProxyStatus
-import io.nekohasekai.libbox.TunOptions
-import io.nekohasekai.libbox.WIFIState
+import go.Seq
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import libcore.BoxInstance
+import libcore.BoxPlatformInterface
+import libcore.ExchangeContext
+import libcore.Libcore
+import libcore.LocalDNSTransport
+import libcore.NB4AInterface
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.Socket
 import java.net.URLDecoder
+import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
 import java.util.UUID
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 data class XrayState(
     val isRunning: Boolean = false,
@@ -58,197 +54,238 @@ data class XrayProfile(
 )
 
 object XrayTunnelManager {
-    private var commandServer: CommandServer? = null
-    private var envInitialized = false
-    @Volatile private var lastCoreError: String = ""
+    @Volatile private var activeBox: BoxInstance? = null
+    @Volatile private var envInitialized = false
     @Volatile private var appCtx: Context? = null
-    @Volatile private var defaultListener: InterfaceUpdateListener? = null
-    @Volatile private var activeConfig: String? = null
+    @Volatile private var activeRawInput: String? = null
+    @Volatile private var activeOverrides: XrayOverrides = XrayOverrides()
+    @Volatile private var activeVpnMode: Boolean = false
     @Volatile private var lastIface: String? = null
     @Volatile private var generation: Int = 0
-    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
-    private val dnsExec = Executors.newCachedThreadPool()
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
     private val _state = MutableStateFlow(XrayState())
     val state: StateFlow<XrayState> = _state
 
     const val LOCAL_SOCKS_PORT = 10808
     private const val PREF_PROFILES = "xray_profiles_json"
+    private const val CONNECTION_TEST_URL = "http://cp.cloudflare.com/"
 
-    private fun toStringIterator(items: List<String>): StringIterator = object : StringIterator {
-        private var idx = 0
-        override fun len(): Int = items.size
-        override fun hasNext(): Boolean = idx < items.size
-        override fun next(): String = items[idx++]
-    }
+    /**
+     * Exact port of NekoBox's `moe.matsuri.nb4a.net.LocalResolverImpl`.
+     * Uses Android's native `libandroid.so` (`android_res_nsend` via `networkHandle()`) and `DnsResolver`.
+     */
+    private val localResolver = object : LocalDNSTransport {
+        private val RCODE_NXDOMAIN = 3
 
-    private fun isIgnoredInterface(name: String): Boolean {
-        val n = name.lowercase()
-        return n.startsWith("tun") || n.startsWith("ppp") || n.startsWith("dummy") ||
-            n.startsWith("ifb") || n.startsWith("sit") || n.startsWith("ip6tnl")
-    }
+        override fun raw(): Boolean {
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        }
 
-    private fun collectBoxInterfaces(): List<io.nekohasekai.libbox.NetworkInterface> {
-        val list = mutableListOf<io.nekohasekai.libbox.NetworkInterface>()
-        val seenNames = HashSet<String>()
-        val usedIndices = HashSet<Int>()
+        override fun networkHandle(): Long {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val ctx = appCtx ?: return 0L
+                return PhysicalNetwork.current(ctx)?.network?.networkHandle ?: 0L
+            }
+            return 0L
+        }
 
-        val ctx = appCtx
-        if (ctx != null) {
-            val cmIfaces = PhysicalNetwork.allInterfaces(ctx)
-            for (info in cmIfaces) {
-                if (isIgnoredInterface(info.interfaceName)) continue
-                seenNames.add(info.interfaceName)
-                usedIndices.add(info.index)
-                val boxNi = io.nekohasekai.libbox.NetworkInterface().apply {
-                    index = info.index
-                    mtu = info.mtu
-                    name = info.interfaceName
-                    flags = 1 or 2 or 16
-                    addresses = toStringIterator(info.cidrAddresses)
-                    dnsServer = toStringIterator(info.dnsServers)
+        @RequiresApi(Build.VERSION_CODES.Q)
+        override fun exchange(ctx: ExchangeContext, message: ByteArray) {
+            val signal = CancellationSignal()
+            ctx.onCancel { signal.cancel() }
+            val physNet = appCtx?.let { PhysicalNetwork.current(it)?.network }
+            val callback = object : DnsResolver.Callback<ByteArray> {
+                override fun onAnswer(answer: ByteArray, rcode: Int) {
+                    ctx.rawSuccess(answer)
                 }
-                list.add(boxNi)
+
+                override fun onError(error: DnsResolver.DnsException) {
+                    val cause = error.cause
+                    if (cause is ErrnoException) {
+                        ctx.errnoCode(cause.errno)
+                    } else {
+                        ctx.errnoCode(114514)
+                    }
+                }
+            }
+            DnsResolver.getInstance().rawQuery(
+                physNet,
+                message,
+                DnsResolver.FLAG_NO_RETRY,
+                Dispatchers.IO.asExecutor(),
+                signal,
+                callback
+            )
+        }
+
+        override fun lookup(ctx: ExchangeContext, network: String, domain: String) {
+            val physNet = appCtx?.let { PhysicalNetwork.current(it)?.network }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val signal = CancellationSignal()
+                ctx.onCancel { signal.cancel() }
+                val callback = object : DnsResolver.Callback<Collection<InetAddress>> {
+                    override fun onAnswer(answer: Collection<InetAddress>, rcode: Int) {
+                        try {
+                            if (rcode == 0) {
+                                ctx.success(answer.mapNotNull { it.hostAddress }.joinToString("\n"))
+                            } else {
+                                ctx.errorCode(rcode)
+                            }
+                        } catch (_: Exception) {
+                            ctx.errnoCode(114514)
+                        }
+                    }
+
+                    override fun onError(error: DnsResolver.DnsException) {
+                        val cause = error.cause
+                        if (cause is ErrnoException) {
+                            ctx.errnoCode(cause.errno)
+                        } else {
+                            ctx.errnoCode(114514)
+                        }
+                    }
+                }
+                val type = when {
+                    network.endsWith("4") -> DnsResolver.TYPE_A
+                    network.endsWith("6") -> DnsResolver.TYPE_AAAA
+                    else -> null
+                }
+                if (type != null) {
+                    DnsResolver.getInstance().query(
+                        physNet,
+                        domain,
+                        type,
+                        DnsResolver.FLAG_NO_RETRY,
+                        Dispatchers.IO.asExecutor(),
+                        signal,
+                        callback
+                    )
+                } else {
+                    DnsResolver.getInstance().query(
+                        physNet,
+                        domain,
+                        DnsResolver.FLAG_NO_RETRY,
+                        Dispatchers.IO.asExecutor(),
+                        signal,
+                        callback
+                    )
+                }
+            } else {
+                Thread {
+                    try {
+                        val answer = try {
+                            physNet?.getAllByName(domain)
+                        } catch (_: UnknownHostException) {
+                            null
+                        } ?: InetAddress.getAllByName(domain)
+                        if (answer != null) {
+                            ctx.success(answer.mapNotNull { it.hostAddress }.joinToString("\n"))
+                        } else {
+                            ctx.errnoCode(114514)
+                        }
+                    } catch (_: UnknownHostException) {
+                        ctx.errorCode(RCODE_NXDOMAIN)
+                    } catch (_: Exception) {
+                        ctx.errnoCode(114514)
+                    }
+                }.start()
             }
         }
-
-        runCatching {
-            val en = java.net.NetworkInterface.getNetworkInterfaces()
-            var nextIdx = (usedIndices.maxOrNull() ?: 0) + 1
-            while (en != null && en.hasMoreElements()) {
-                val ni = en.nextElement()
-                val name = ni.name ?: continue
-                if (!ni.isUp || ni.isLoopback || isIgnoredInterface(name) || !seenNames.add(name)) continue
-                val addrs = ni.interfaceAddresses.mapNotNull { ia ->
-                    val a = ia.address ?: return@mapNotNull null
-                    val rawHost = a.hostAddress ?: return@mapNotNull null
-                    val cleanHost = rawHost.substringBefore('%')
-                    "$cleanHost/${ia.networkPrefixLength}"
-                }
-                if (addrs.isEmpty()) continue
-                var idx = ni.index
-                if (idx <= 0 || !usedIndices.add(idx)) {
-                    while (usedIndices.contains(nextIdx)) nextIdx++
-                    idx = nextIdx
-                    usedIndices.add(idx)
-                }
-                val boxNi = io.nekohasekai.libbox.NetworkInterface().apply {
-                    index = idx
-                    mtu = runCatching { ni.mtu }.getOrDefault(1500).let { if (it in 1280..9000) it else 1500 }
-                    this.name = name
-                    flags = 1 or 2 or 16
-                    addresses = toStringIterator(addrs)
-                    dnsServer = toStringIterator(listOf("8.8.8.8", "1.1.1.1"))
-                }
-                list.add(boxNi)
-            }
-        }
-
-        if (list.isEmpty()) {
-            val fallback = io.nekohasekai.libbox.NetworkInterface().apply {
-                index = 1
-                mtu = 1500
-                name = "wlan0"
-                flags = 1 or 2 or 16
-                addresses = toStringIterator(listOf("10.0.0.2/24"))
-                dnsServer = toStringIterator(listOf("8.8.8.8", "1.1.1.1"))
-            }
-            list.add(fallback)
-        }
-        return list
     }
 
-    private fun pushDefaultInterface(listener: InterfaceUpdateListener) {
-        val first = collectBoxInterfaces().firstOrNull()
-        if (first != null) {
-            lastIface = first.name
-            runCatching { listener.updateDefaultInterface(first.name, first.index, false, false) }
-        } else {
-            lastIface = "wlan0"
-            runCatching { listener.updateDefaultInterface("wlan0", 1, false, false) }
-        }
-    }
-
-    private val platformImpl = object : PlatformInterface {
-        override fun localDNSTransport(): LocalDNSTransport? = null
-        override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
+    /**
+     * Exact port of NekoBox's `moe.matsuri.nb4a.NativeInterface`.
+     */
+    private val nativeInterface = object : BoxPlatformInterface, NB4AInterface {
         override fun autoDetectInterfaceControl(fd: Int) {
             NearChatVpnService.protectFd(fd)
         }
-        override fun openTun(options: TunOptions?): Int = -1
-        override fun useProcFS(): Boolean = false
+
+        override fun openTun(singTunOptionsJson: String, tunPlatformOptionsJson: String): Long {
+            return NearChatVpnService.openTunFromCore().toLong()
+        }
+
+        override fun useProcFS(): Boolean {
+            return Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+        }
+
+        @RequiresApi(Build.VERSION_CODES.Q)
         override fun findConnectionOwner(
-            ipProtocol: Int,
-            sourceAddress: String?,
-            sourcePort: Int,
-            destinationAddress: String?,
-            destinationPort: Int
-        ): ConnectionOwner = ConnectionOwner()
-        override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
-            if (listener == null) return
-            defaultListener = listener
-            pushDefaultInterface(listener)
-        }
-        override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
-            defaultListener = null
-        }
-        override fun getInterfaces(): NetworkInterfaceIterator {
-            val items = collectBoxInterfaces()
-            var idx = 0
-            return object : NetworkInterfaceIterator {
-                override fun hasNext(): Boolean = idx < items.size
-                override fun next(): io.nekohasekai.libbox.NetworkInterface = items[idx++]
+            ipProto: Int,
+            srcIp: String,
+            srcPort: Int,
+            destIp: String,
+            destPort: Int
+        ): Int {
+            val cm = appCtx?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return -1
+            return try {
+                cm.getConnectionOwnerUid(
+                    ipProto,
+                    InetSocketAddress(srcIp, srcPort),
+                    InetSocketAddress(destIp, destPort)
+                )
+            } catch (_: Throwable) {
+                -1
             }
         }
-        override fun underNetworkExtension(): Boolean = false
-        override fun includeAllNetworks(): Boolean = false
-        override fun readWIFIState(): WIFIState = Libbox.newWIFIState("", "")
-        override fun systemCertificates(): StringIterator = toStringIterator(emptyList())
-        override fun clearDNSCache() {}
-        override fun sendNotification(notification: Notification?) {}
-    }
 
-    private val commandHandler = object : CommandServerHandler {
-        override fun serviceStop() {
-            stop()
+        override fun packageNameByUid(uid: Int): String {
+            if (uid <= 1000) return "android"
+            val pm = appCtx?.packageManager ?: return "android"
+            return pm.getPackagesForUid(uid)?.firstOrNull() ?: "android"
         }
-        override fun serviceReload() {}
-        override fun getSystemProxyStatus(): SystemProxyStatus = SystemProxyStatus()
-        override fun setSystemProxyEnabled(enabled: Boolean) {}
-        override fun writeDebugMessage(message: String?) {
-            if (!message.isNullOrBlank()) {
-                val trimmed = message.trim()
-                lastCoreError = trimmed
-                AppLog.log("SINGBOX", trimmed)
+
+        override fun uidByPackageName(packageName: String): Int {
+            val pm = appCtx?.packageManager ?: return 0
+            return try {
+                @Suppress("DEPRECATION")
+                pm.getApplicationInfo(packageName, 0).uid
+            } catch (_: Throwable) {
+                0
             }
         }
+
+        override fun wifiState(): String = ","
+
+        override fun useOfficialAssets(): Boolean = true
+
+        override fun selector_OnProxySelected(selectorTag: String, tag: String) {
+            Libcore.resetAllConnections(true)
+        }
     }
 
-    private fun readRecentCoreLog(): String {
-        val mem = lastCoreError.trim()
-        if (mem.isNotEmpty()) return mem.lines().lastOrNull { it.isNotBlank() }?.take(140) ?: mem.take(140)
+    @Synchronized
+    private fun ensureSetup(context: Context) {
+        val app = context.applicationContext
+        appCtx = app
+        if (envInitialized) return
+        val externalAssets = (app.getExternalFilesDir(null) ?: app.filesDir).apply { mkdirs() }
+        Seq.setContext(app)
+        Libcore.initCore(
+            "${app.packageName}:bg",
+            app.cacheDir.absolutePath + "/",
+            app.filesDir.absolutePath + "/",
+            externalAssets.absolutePath + "/",
+            50,
+            true,
+            nativeInterface,
+            nativeInterface,
+            localResolver
+        )
+        envInitialized = true
+    }
+
+    private fun readRecentNekoLog(): String {
         val ctx = appCtx ?: return ""
         return runCatching {
-            val workDir = File(File(ctx.filesDir, "singbox"), "work")
-            val logFiles = workDir.listFiles { f -> f.isFile && (f.name.endsWith(".log") || f.name.contains("box")) }
-            val latest = logFiles?.maxByOrNull { it.lastModified() } ?: return@runCatching ""
-            latest.readLines().lastOrNull { it.isNotBlank() }?.take(140).orEmpty()
+            val logFile = File(ctx.cacheDir, "neko.log")
+            if (!logFile.exists()) return@runCatching ""
+            logFile.readLines()
+                .lastOrNull { it.contains("ERROR", true) || it.contains("WARN", true) || it.contains("fail", true) }
+                ?.take(140)
+                ?: ""
         }.getOrDefault("")
-    }
-
-    private fun ensureSetup(context: Context) {
-        appCtx = context.applicationContext
-        if (envInitialized) return
-        val baseDir = File(context.filesDir, "singbox").apply { mkdirs() }
-        val workDir = File(baseDir, "work").apply { mkdirs() }
-        val tmpDir = File(baseDir, "tmp").apply { mkdirs() }
-        val opts = SetupOptions().apply {
-            basePath = baseDir.absolutePath
-            workingPath = workDir.absolutePath
-            tempPath = tmpDir.absolutePath
-            fixAndroidStack = true
-        }
-        Libbox.setup(opts)
-        envInitialized = true
     }
 
     fun loadProfiles(context: Context): List<XrayProfile> {
@@ -315,33 +352,10 @@ object XrayTunnelManager {
             .edit().putString(PREF_PROFILES, arr.toString()).apply()
     }
 
-    private fun isPortOpen(port: Int): Boolean = runCatching {
-        Socket().use { s ->
-            s.connect(InetSocketAddress("127.0.0.1", port), 250)
-            true
-        }
-    }.getOrDefault(false)
-
-    private fun waitForPort(port: Int, timeoutMs: Long = 3500L): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (isPortOpen(port)) return true
-            Thread.sleep(120)
-        }
-        return false
-    }
-
-    @Synchronized
-    private fun getOrCreateServer(context: Context): CommandServer {
-        ensureSetup(context)
-        val existing = commandServer
-        if (existing != null) return existing
-        return Libbox.newCommandServer(commandHandler, platformImpl).apply {
-            start()
-            commandServer = this
-        }
-    }
-
+    /**
+     * Exact port of NekoBox's `TestInstance.kt` & `UrlTest.kt`:
+     * Uses `Libcore.newSingBoxInstance` + `Libcore.urlTest(box, CONNECTION_TEST_URL, 5000)`.
+     */
     suspend fun testPing(
         context: Context,
         rawInput: String,
@@ -350,81 +364,38 @@ object XrayTunnelManager {
         runCatching {
             val trimmed = rawInput.trim()
             if (trimmed.isEmpty()) error("Paste a config link or JSON first")
-            val wasRunning = _state.value.isRunning
-            val cs = getOrCreateServer(context)
+            ensureSetup(context)
 
-            if (wasRunning) {
-                val directTry = runCatching { testProxyLatency(LOCAL_SOCKS_PORT, timeoutMs = 4500) }
-                if (directTry.isSuccess) return@runCatching directTry.getOrThrow()
+            val currentBox = activeBox
+            if (currentBox != null && _state.value.isRunning) {
+                val res = runCatching {
+                    Libcore.urlTest(currentBox, CONNECTION_TEST_URL, 5000).toLong()
+                }
+                if (res.isSuccess) return@runCatching res.getOrThrow()
             }
 
-            val candidates = buildNekoBoxConfigCandidates(context, trimmed, overrides, LOCAL_SOCKS_PORT)
-            var lastCheckErr: Throwable? = null
-            var lastTestErr: Throwable? = null
-            var chosenCfg: String? = null
-            var pingMs: Long? = null
-            var anyCandidateChecked = false
-
-            for ((label, cfg) in candidates) {
-                val checkRes = runCatching { Libbox.checkConfig(cfg) }
-                if (checkRes.isFailure) {
-                    lastCheckErr = checkRes.exceptionOrNull()
-                    AppLog.log("SINGBOX", "checkConfig failed on '$label': ${lastCheckErr?.message}")
-                    continue
-                }
-                anyCandidateChecked = true
-                lastCoreError = ""
-                val started = runCatching {
-                    cs.startOrReloadService(cfg, OverrideOptions())
-                    waitForPort(LOCAL_SOCKS_PORT, 3000L)
-                }.getOrDefault(false)
-                if (!started) continue
-
-                val res = runCatching { testProxyLatency(LOCAL_SOCKS_PORT, timeoutMs = 4500) }
-                if (res.isSuccess) {
-                    chosenCfg = cfg
-                    pingMs = res.getOrThrow()
-                    AppLog.log("SINGBOX", "Ping succeeded with variant '$label': ${pingMs}ms")
-                    break
-                } else {
-                    lastTestErr = res.exceptionOrNull()
-                    AppLog.log("SINGBOX", "Ping failed on variant '$label': ${lastTestErr?.message} | core=$lastCoreError")
-                }
-            }
-
-            if (pingMs != null && chosenCfg != null) {
-                if (wasRunning) {
-                    activeConfig = chosenCfg
-                    val bindHost = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
-                    _state.value = XrayState(true, "sing-box active ($bindHost:$LOCAL_SOCKS_PORT) • Connected (${pingMs} ms)")
-                } else {
-                    runCatching { cs.closeService() }
-                }
-                pingMs
-            } else {
-                if (!wasRunning) {
-                    runCatching { cs.closeService() }
-                } else if (activeConfig != null) {
-                    runCatching { cs.startOrReloadService(activeConfig!!, OverrideOptions()) }
-                }
-                if (!anyCandidateChecked && lastCheckErr != null) {
-                    error("Config error: ${lastCheckErr?.message}")
-                }
-                val coreDetail = readRecentCoreLog()
-                val baseMsg = lastTestErr?.message ?: "Server closed connection or unreachable"
-                if (coreDetail.isNotEmpty() && !baseMsg.contains(coreDetail)) {
-                    error("$baseMsg — $coreDetail")
-                } else {
-                    error(baseMsg)
-                }
+            val cfg = buildNekoBoxConfig(trimmed, overrides, forTest = true, isVpn = false)
+            val testBox = Libcore.newSingBoxInstance(cfg, localResolver)
+            try {
+                testBox.start()
+                val latency = Libcore.urlTest(testBox, CONNECTION_TEST_URL, 5000)
+                latency.toLong()
+            } finally {
+                runCatching { testBox.close() }
             }
         }
     }
 
+    /**
+     * Exact port of NekoBox's `BoxInstance.kt` & `ProxyInstance.kt`:
+     * Starts `Libcore.newSingBoxInstance`, calls `box.setAsMain()` and `box.start()`.
+     * When `vpnMode = true`, `tun-in` inbound causes `sing-box` to call `openTun()` on `NearChatVpnService`.
+     */
     fun start(
         context: Context,
         rawInput: String,
         overrides: XrayOverrides = XrayOverrides(),
+        vpnMode: Boolean = false,
         onReady: (() -> Unit)? = null
     ) {
         stop()
@@ -434,103 +405,64 @@ object XrayTunnelManager {
             return
         }
 
-        _state.value = XrayState(false, "Starting sing-box…")
+        _state.value = XrayState(false, "Starting NekoBox sing-box core…")
         val myGen = generation
         Thread {
             try {
-                lastCoreError = ""
-                val cs = getOrCreateServer(context)
-                val candidates = buildNekoBoxConfigCandidates(context, trimmed, overrides, LOCAL_SOCKS_PORT)
-                val validCandidates = mutableListOf<Pair<String, String>>()
-                var lastCheckErr: Throwable? = null
-                for (pair in candidates) {
-                    val res = runCatching { Libbox.checkConfig(pair.second) }
-                    if (res.isSuccess) {
-                        validCandidates.add(pair)
-                    } else {
-                        lastCheckErr = res.exceptionOrNull()
-                        AppLog.log("SINGBOX", "Variant '${pair.first}' rejected: ${lastCheckErr?.message}")
-                    }
+                ensureSetup(context)
+                if (vpnMode) {
+                    NearChatVpnService.startNekoVpn(context)
+                    NearChatVpnService.waitForInstance(3500L)
                 }
-                if (validCandidates.isEmpty()) {
-                    error("Invalid config: ${lastCheckErr?.message ?: "rejected by sing-box"}")
-                }
-
-                var up = false
-                var activeJson: String? = null
-                for ((label, candidate) in validCandidates) {
-                    if (myGen != generation) return@Thread
-                    lastCoreError = ""
-                    runCatching { cs.startOrReloadService(candidate, OverrideOptions()) }
-                    if (waitForPort(LOCAL_SOCKS_PORT, 3000L)) {
-                        up = true
-                        activeJson = candidate
-                        AppLog.log("SINGBOX", "Initial start with '$label'")
-                        break
-                    } else {
-                        runCatching { cs.closeService() }
-                    }
-                }
-
                 if (myGen != generation) return@Thread
-                if (up && activeJson != null) {
-                    val bindHost = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
-                    activeConfig = activeJson
-                    lastIface = appCtx?.let { PhysicalNetwork.current(it)?.interfaceName }
-                    startNetworkWatch()
-                    _state.value = XrayState(true, "sing-box active ($bindHost:$LOCAL_SOCKS_PORT) • Connecting…")
-                    onReady?.invoke()
 
-                    var workingLatency: Long? = runCatching {
-                        testProxyLatency(LOCAL_SOCKS_PORT, timeoutMs = 4500)
-                    }.getOrNull()
+                val cfg = buildNekoBoxConfig(trimmed, overrides, forTest = false, isVpn = vpnMode)
+                val box = Libcore.newSingBoxInstance(cfg, localResolver)
+                box.setAsMain()
+                box.start()
 
-                    if (workingLatency == null && validCandidates.size > 1) {
-                        for ((label, candidate) in validCandidates.drop(1)) {
-                            if (myGen != generation || !_state.value.isRunning) return@Thread
-                            lastCoreError = ""
-                            val reloaded = runCatching {
-                                cs.startOrReloadService(candidate, OverrideOptions())
-                                waitForPort(LOCAL_SOCKS_PORT, 2500L)
-                            }.getOrDefault(false)
-                            if (!reloaded) continue
-                            val testRes = runCatching { testProxyLatency(LOCAL_SOCKS_PORT, timeoutMs = 4500) }
-                            if (testRes.isSuccess) {
-                                activeConfig = candidate
-                                workingLatency = testRes.getOrNull()
-                                AppLog.log("SINGBOX", "Auto-switched to working variant '$label' (${workingLatency}ms)")
-                                break
-                            }
-                        }
-                        if (workingLatency == null && activeConfig != validCandidates.first().second) {
-                            activeConfig = validCandidates.first().second
-                            runCatching { cs.startOrReloadService(activeConfig!!, OverrideOptions()) }
-                        }
+                if (myGen != generation) {
+                    runCatching { box.close() }
+                    return@Thread
+                }
+
+                activeBox = box
+                activeRawInput = trimmed
+                activeOverrides = overrides
+                activeVpnMode = vpnMode
+                lastIface = appCtx?.let { PhysicalNetwork.current(it)?.interfaceName }
+                startNetworkWatch()
+
+                val bindHost = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
+                val modeLabel = if (vpnMode) "VPN + Proxy" else "Proxy"
+                _state.value = XrayState(true, "NekoBox $modeLabel active ($bindHost:$LOCAL_SOCKS_PORT) • Testing…")
+                onReady?.invoke()
+
+                val latency = runCatching {
+                    Libcore.urlTest(box, CONNECTION_TEST_URL, 5000)
+                }.getOrNull()
+
+                if (myGen == generation && _state.value.isRunning) {
+                    if (latency != null && latency >= 0) {
+                        _state.value = XrayState(
+                            true,
+                            "NekoBox $modeLabel active ($bindHost:$LOCAL_SOCKS_PORT) • Connected (${latency} ms)"
+                        )
+                    } else {
+                        val logDetail = readRecentNekoLog()
+                        val suffix = if (logDetail.isNotEmpty()) " ($logDetail)" else ""
+                        _state.value = XrayState(
+                            true,
+                            "NekoBox $modeLabel active ($bindHost:$LOCAL_SOCKS_PORT)$suffix"
+                        )
                     }
-
-                    if (myGen == generation && _state.value.isRunning) {
-                        if (workingLatency != null && workingLatency >= 0L) {
-                            _state.value = XrayState(
-                                true,
-                                "sing-box active ($bindHost:$LOCAL_SOCKS_PORT) • Connected (${workingLatency} ms)"
-                            )
-                        } else {
-                            val coreErr = readRecentCoreLog()
-                            val suffix = if (coreErr.isNotEmpty()) " ($coreErr)" else ""
-                            _state.value = XrayState(
-                                true,
-                                "sing-box active ($bindHost:$LOCAL_SOCKS_PORT) • Tunnel & VPN running$suffix"
-                            )
-                        }
-                    }
-                } else {
-                    val msg = lastCoreError.ifBlank { "Port $LOCAL_SOCKS_PORT failed to bind" }
-                    _state.value = XrayState(false, "Core error: $msg")
                 }
             } catch (e: Throwable) {
                 AppLog.log("SINGBOX", "Start failed", e)
                 _state.value = XrayState(false, "Error: ${e.message}")
-                commandServer = null
+                if (vpnMode) {
+                    appCtx?.let { NearChatVpnService.stop(it) }
+                }
             }
         }.start()
     }
@@ -538,181 +470,15 @@ object XrayTunnelManager {
     fun stop() {
         generation++
         stopNetworkWatch()
-        activeConfig = null
-        try {
-            commandServer?.closeService()
-        } catch (_: Throwable) {
+        val old = activeBox
+        activeBox = null
+        activeRawInput = null
+        if (old != null) {
+            Thread {
+                runCatching { old.close() }
+            }.start()
         }
         _state.value = XrayState(false, "")
-    }
-
-    private fun testProxyLatency(port: Int, timeoutMs: Int = 4500): Long {
-        val targets = listOf(
-            Triple("cp.cloudflare.com", 80, "/"),
-            Triple("connectivitycheck.gstatic.com", 80, "/generate_204"),
-            Triple("www.gstatic.com", 80, "/generate_204")
-        )
-        var lastError: Throwable? = null
-        for ((host, targetPort, path) in targets) {
-            val resSocks = runCatching {
-                socks5HttpGetLatency(port, host, targetPort, path, timeoutMs)
-            }
-            if (resSocks.isSuccess) return resSocks.getOrThrow()
-            lastError = resSocks.exceptionOrNull()
-
-            val resHttp = runCatching {
-                httpProxyGetLatency(port, host, targetPort, path, timeoutMs)
-            }
-            if (resHttp.isSuccess) return resHttp.getOrThrow()
-            lastError = resHttp.exceptionOrNull() ?: lastError
-        }
-        val coreMsg = readRecentCoreLog()
-        val errText = lastError?.message ?: "Connection test timed out"
-        if (coreMsg.isNotEmpty() && !errText.contains(coreMsg)) {
-            error("$errText ($coreMsg)")
-        }
-        throw lastError ?: IllegalStateException(errText)
-    }
-
-    private fun socks5HttpGetLatency(
-        proxyPort: Int,
-        targetHost: String,
-        targetPort: Int,
-        path: String,
-        timeoutMs: Int
-    ): Long {
-        Socket().use { s ->
-            s.tcpNoDelay = true
-            s.soTimeout = timeoutMs
-            s.connect(InetSocketAddress("127.0.0.1", proxyPort), minOf(timeoutMs, 2500))
-            val outS = s.getOutputStream()
-            val inS = s.getInputStream()
-
-            val t0 = System.currentTimeMillis()
-            outS.write(byteArrayOf(0x05, 0x01, 0x00))
-            outS.flush()
-            val greet = ByteArray(2)
-            readExact(inS, greet)
-            if (greet[0] != 0x05.toByte() || greet[1] != 0x00.toByte()) {
-                error("SOCKS5 handshake rejected")
-            }
-
-            val hostBytes = targetHost.toByteArray(StandardCharsets.UTF_8)
-            val req = ByteArray(7 + hostBytes.size)
-            req[0] = 0x05
-            req[1] = 0x01
-            req[2] = 0x00
-            req[3] = 0x03
-            req[4] = hostBytes.size.toByte()
-            System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
-            req[5 + hostBytes.size] = ((targetPort shr 8) and 0xFF).toByte()
-            req[6 + hostBytes.size] = (targetPort and 0xFF).toByte()
-            outS.write(req)
-            outS.flush()
-
-            val hdr = ByteArray(4)
-            readExact(inS, hdr)
-            if (hdr[1] != 0x00.toByte()) {
-                val rep = hdr[1].toInt() and 0xFF
-                val coreMsg = readRecentCoreLog()
-                val detail = if (coreMsg.isNotEmpty()) ": $coreMsg" else ""
-                error("SOCKS5 connect failed (code $rep)$detail")
-            }
-            when (hdr[3].toInt() and 0xFF) {
-                0x01 -> readExact(inS, ByteArray(6))
-                0x03 -> {
-                    val len = inS.read()
-                    if (len < 0) error("Unexpected EOF in SOCKS5 reply")
-                    readExact(inS, ByteArray(len + 2))
-                }
-                0x04 -> readExact(inS, ByteArray(18))
-                else -> error("Unknown SOCKS5 address type")
-            }
-
-            val httpReq = "GET $path HTTP/1.1\r\nHost: $targetHost\r\nUser-Agent: curl/8.0\r\nConnection: close\r\n\r\n"
-            outS.write(httpReq.toByteArray(StandardCharsets.UTF_8))
-            outS.flush()
-
-            val statusLine = readHttpLine(inS)
-            if (statusLine.isBlank()) {
-                val coreMsg = readRecentCoreLog()
-                val detail = if (coreMsg.isNotEmpty()) ": $coreMsg" else ""
-                error("Remote closed connection (EOF)$detail")
-            }
-            if (!statusLine.startsWith("HTTP/")) {
-                error("Unexpected reply: ${statusLine.take(40)}")
-            }
-            val code = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 0
-            if (code !in 200..499) {
-                val coreMsg = readRecentCoreLog()
-                val detail = if (coreMsg.isNotEmpty()) " ($coreMsg)" else ""
-                error("HTTP $code$detail")
-            }
-            return (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-        }
-    }
-
-    private fun httpProxyGetLatency(
-        proxyPort: Int,
-        targetHost: String,
-        targetPort: Int,
-        path: String,
-        timeoutMs: Int
-    ): Long {
-        Socket().use { s ->
-            s.tcpNoDelay = true
-            s.soTimeout = timeoutMs
-            s.connect(InetSocketAddress("127.0.0.1", proxyPort), minOf(timeoutMs, 2500))
-            val outS = s.getOutputStream()
-            val inS = s.getInputStream()
-
-            val t0 = System.currentTimeMillis()
-            val portPart = if (targetPort == 80) "" else ":$targetPort"
-            val req = "GET http://$targetHost$portPart$path HTTP/1.1\r\n" +
-                "Host: $targetHost$portPart\r\n" +
-                "User-Agent: curl/8.0\r\n" +
-                "Proxy-Connection: close\r\n" +
-                "Connection: close\r\n\r\n"
-            outS.write(req.toByteArray(StandardCharsets.UTF_8))
-            outS.flush()
-
-            val statusLine = readHttpLine(inS)
-            if (statusLine.isBlank()) {
-                val coreMsg = readRecentCoreLog()
-                val detail = if (coreMsg.isNotEmpty()) ": $coreMsg" else ""
-                error("Remote closed connection (EOF)$detail")
-            }
-            if (!statusLine.startsWith("HTTP/")) {
-                error("Unexpected proxy reply: ${statusLine.take(40)}")
-            }
-            val code = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 0
-            if (code !in 200..499) {
-                val coreMsg = readRecentCoreLog()
-                val detail = if (coreMsg.isNotEmpty()) " ($coreMsg)" else ""
-                error("HTTP $code$detail")
-            }
-            return (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-        }
-    }
-
-    private fun readExact(inS: InputStream, buf: ByteArray) {
-        var off = 0
-        while (off < buf.size) {
-            val r = inS.read(buf, off, buf.size - off)
-            if (r <= 0) throw java.io.EOFException("Connection closed by peer")
-            off += r
-        }
-    }
-
-    private fun readHttpLine(inS: InputStream): String {
-        val bos = ByteArrayOutputStream()
-        while (bos.size() < 512) {
-            val b = inS.read()
-            if (b < 0) break
-            if (b == '\n'.code) break
-            if (b != '\r'.code) bos.write(b)
-        }
-        return String(bos.toByteArray(), StandardCharsets.UTF_8)
     }
 
     private fun startNetworkWatch() {
@@ -732,21 +498,15 @@ object XrayTunnelManager {
         if (!_state.value.isRunning) return
         val phys = PhysicalNetwork.current(ctx) ?: return
         if (phys.interfaceName == lastIface) return
-        val cfg = activeConfig ?: return
-        AppLog.log("SINGBOX", "Network changed ${lastIface} -> ${phys.interfaceName}, reloading core")
         lastIface = phys.interfaceName
-        defaultListener?.let { pushDefaultInterface(it) }
+        AppLog.log("SINGBOX", "Network changed -> resetting connections")
         Thread {
-            try {
-                commandServer?.startOrReloadService(cfg, OverrideOptions())
-            } catch (e: Throwable) {
-                AppLog.log("SINGBOX", "Reload after network change failed", e)
-            }
+            runCatching { Libcore.resetAllConnections(true) }
         }.start()
     }
 
     // =========================================================================
-    // NekoBox ConfigBuilder & Protocol Formatters (ported from NekoBoxForAndroid)
+    // Exact NekoBox ConfigBuilder.kt + V2RayFmt.kt / TrojanFmt.kt / ShadowsocksFmt.kt
     // =========================================================================
 
     private fun isIpLiteral(host: String): Boolean {
@@ -756,161 +516,171 @@ object XrayTunnelManager {
         return ipv4.matches(h) || h.contains(":")
     }
 
-    private fun isPrivateOrLoopbackIpv4(ip: String): Boolean {
-        if (ip.startsWith("10.") || ip.startsWith("127.") || ip.startsWith("192.168.") || ip.startsWith("0.")) {
-            return true
-        }
-        if (ip.startsWith("172.")) {
-            val second = ip.split(".").getOrNull(1)?.toIntOrNull() ?: 0
-            if (second in 16..31) return true
-        }
-        return false
-    }
-
-    private fun resolvePublicIpv4WithTimeout(context: Context?, host: String, timeoutMs: Long = 2000L): String? {
-        val h = host.trim().removeSurrounding("[", "]")
-        if (h.isEmpty() || isIpLiteral(h)) return null
-        return try {
-            val fut = dnsExec.submit<String?> { PhysicalNetwork.resolveIpv4(context, h) }
-            val ipv4 = fut.get(timeoutMs, TimeUnit.MILLISECONDS)
-            if (!ipv4.isNullOrBlank() && !isPrivateOrLoopbackIpv4(ipv4)) ipv4 else null
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private fun buildNekoBoxConfigCandidates(
-        context: Context,
-        input: String,
+    /**
+     * Exact port of NekoBox's `io.nekohasekai.sagernet.fmt.ConfigBuilder.kt`:
+     * Builds the full NekoBox JSON config for `Libcore.newSingBoxInstance`.
+     */
+    private fun buildNekoBoxConfig(
+        rawInput: String,
         overrides: XrayOverrides,
-        listenPort: Int
-    ): List<Pair<String, String>> {
-        val normalizedInput = extractProxyInput(input)
-        val baseRoot = buildBaseConfigJsonObject(normalizedInput, overrides, listenPort)
+        forTest: Boolean,
+        isVpn: Boolean
+    ): String {
+        val normalizedInput = extractProxyInput(rawInput)
+        val proxyOutbounds = extractOrBuildOutbounds(normalizedInput, overrides, forTest)
+        if (proxyOutbounds.length() == 0) error("No valid proxy outbound found")
 
-        val outbounds = baseRoot.optJSONArray("outbounds") ?: JSONArray()
-        val mainOb = outbounds.optJSONObject(0) ?: error("No proxy outbound found in config")
+        val mainOb = proxyOutbounds.getJSONObject(0)
         val mainTag = mainOb.optString("tag", "proxy").ifBlank { "proxy" }
         mainOb.put("tag", mainTag)
 
-        // Find the first outbound that has a "server" address (in case outbounds[0] is a selector)
-        var targetOb: JSONObject = mainOb
-        for (i in 0 until outbounds.length()) {
-            val item = outbounds.optJSONObject(i) ?: continue
-            if (item.optString("server", "").isNotBlank()) {
-                targetOb = item
-                break
+        // Collect all server domains from outbounds so DNS rules bypass them via dns-direct (NekoBox bypassDNSBeans)
+        val domainListDnsDirectForce = LinkedHashSet<String>()
+        for (i in 0 until proxyOutbounds.length()) {
+            val ob = proxyOutbounds.optJSONObject(i) ?: continue
+            val srv = ob.optString("server", "").trim()
+            if (srv.isNotBlank() && !isIpLiteral(srv)) {
+                domainListDnsDirectForce.add(srv.lowercase())
             }
         }
-        val rawServerHost = targetOb.optString("server", "").trim()
-        val resolvedServerIpv4 = resolvePublicIpv4WithTimeout(context, rawServerHost)
+        domainListDnsDirectForce.add("dns.google")
 
-        val physDns = PhysicalNetwork.current(context)?.dnsServers
-            ?.firstOrNull { !it.contains(":") }
-            ?: "8.8.8.8"
-
-        val candidates = mutableListOf<Pair<String, String>>()
-
-        // Variant 1: NekoBox standard config (OS routing via addDisallowedApplication + dns-out hijack)
-        runCatching {
-            val root = JSONObject(baseRoot.toString())
-            val obs = root.getJSONArray("outbounds")
-            if (resolvedServerIpv4 != null) {
-                patchServerInOutbounds(obs, rawServerHost, resolvedServerIpv4)
-            }
-            ensureOutboundTag(obs, "direct", "direct")
-            ensureOutboundTag(obs, "bypass", "direct")
-            ensureOutboundTag(obs, "block", "block")
-            ensureOutboundTag(obs, "dns-out", "dns")
-
-            root.put("dns", buildNekoDnsObject(mainTag, physDns, rawServerHost))
-            val rules = JSONArray()
-                .put(JSONObject().put("protocol", JSONArray().put("dns")).put("outbound", "dns-out"))
-                .put(JSONObject().put("port", JSONArray().put(53)).put("outbound", "dns-out"))
-            root.put(
-                "route",
-                JSONObject()
-                    .put("final", mainTag)
-                    .put("rules", rules)
-            )
-            candidates.add("nekobox-direct-os" to root.toString())
-        }
-
-        // Variant 2: NekoBox config with uTLS Chrome fingerprint & raw server hostname (for Cloudflare / Bug Host CDNs)
-        runCatching {
-            val root = JSONObject(baseRoot.toString())
-            val obs = root.getJSONArray("outbounds")
-            for (i in 0 until obs.length()) {
-                val obItem = obs.optJSONObject(i) ?: continue
-                val tls = obItem.optJSONObject("tls")
-                if (tls != null && tls.optBoolean("enabled", false) && !tls.has("utls")) {
-                    tls.put("utls", JSONObject().put("enabled", true).put("fingerprint", "chrome"))
-                }
-            }
-            ensureOutboundTag(obs, "direct", "direct")
-            ensureOutboundTag(obs, "dns-out", "dns")
-            root.put("dns", buildNekoDnsObject(mainTag, physDns, rawServerHost))
-            val rules = JSONArray()
-                .put(JSONObject().put("port", JSONArray().put(53)).put("outbound", "dns-out"))
-            root.put(
-                "route",
-                JSONObject()
-                    .put("final", mainTag)
-                    .put("rules", rules)
-            )
-            candidates.add("nekobox-utls-chrome" to root.toString())
-        }
-
-        // Variant 3: NekoBox with uTLS Chrome + resolved IPv4
-        if (resolvedServerIpv4 != null) {
-            runCatching {
-                val root = JSONObject(baseRoot.toString())
-                val obs = root.getJSONArray("outbounds")
-                patchServerInOutbounds(obs, rawServerHost, resolvedServerIpv4)
-                for (i in 0 until obs.length()) {
-                    val obItem = obs.optJSONObject(i) ?: continue
-                    val tls = obItem.optJSONObject("tls")
-                    if (tls != null && tls.optBoolean("enabled", false) && !tls.has("utls")) {
-                        tls.put("utls", JSONObject().put("enabled", true).put("fingerprint", "chrome"))
-                    }
-                }
-                ensureOutboundTag(obs, "direct", "direct")
-                ensureOutboundTag(obs, "dns-out", "dns")
-                root.put("dns", buildNekoDnsObject(mainTag, physDns, rawServerHost))
-                val rules = JSONArray()
-                    .put(JSONObject().put("port", JSONArray().put(53)).put("outbound", "dns-out"))
-                root.put(
-                    "route",
+        // Inbounds (NekoBox ConfigBuilder.kt lines 133-167)
+        val inbounds = JSONArray()
+        if (!forTest) {
+            if (isVpn) {
+                inbounds.put(
                     JSONObject()
-                        .put("final", mainTag)
-                        .put("rules", rules)
+                        .put("type", "tun")
+                        .put("tag", "tun-in")
+                        .put("stack", "gvisor")
+                        .put("endpoint_independent_nat", true)
+                        .put("mtu", 9000)
+                        .put("sniff", true)
+                        .put("sniff_override_destination", false)
+                        .put("inet4_address", JSONArray().put("${NearChatVpnService.PRIVATE_VLAN4_CLIENT}/28"))
                 )
-                candidates.add("nekobox-utls-ipv4" to root.toString())
+            }
+            val bind = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
+            inbounds.put(
+                JSONObject()
+                    .put("type", "mixed")
+                    .put("tag", "mixed-in")
+                    .put("listen", bind)
+                    .put("listen_port", LOCAL_SOCKS_PORT)
+                    .put("sniff", true)
+                    .put("sniff_override_destination", false)
+            )
+        }
+
+        // Outbounds (NekoBox ConfigBuilder.kt lines 485-490)
+        val outbounds = JSONArray()
+        for (i in 0 until proxyOutbounds.length()) {
+            outbounds.put(proxyOutbounds.getJSONObject(i))
+        }
+        ensureOutboundTag(outbounds, "direct", "direct")
+        ensureOutboundTag(outbounds, "bypass", "direct")
+
+        // DNS (NekoBox ConfigBuilder.kt lines 505-573)
+        val dnsServers = JSONArray()
+            .put(JSONObject().put("tag", "dns-block").put("address", "rcode://success"))
+            .put(JSONObject().put("tag", "dns-local").put("address", "local").put("detour", "direct"))
+            .put(
+                JSONObject()
+                    .put("tag", "dns-direct")
+                    .put("address", "https://223.5.5.5/dns-query")
+                    .put("detour", "direct")
+                    .put("address_resolver", "dns-local")
+                    .put("strategy", "ipv4_only")
+            )
+        if (!forTest) {
+            dnsServers.put(
+                JSONObject()
+                    .put("tag", "dns-remote")
+                    .put("address", "https://dns.google/dns-query")
+                    .put("detour", mainTag)
+                    .put("address_resolver", "dns-direct")
+                    .put("strategy", "ipv4_only")
+            )
+        }
+
+        val dnsRules = JSONArray()
+        val dnsObj = JSONObject()
+            .put("servers", dnsServers)
+            .put("rules", dnsRules)
+            .put("final", if (forTest) "dns-direct" else "dns-remote")
+            .put("independent_cache", true)
+
+        // Route (NekoBox ConfigBuilder.kt lines 172-176 & 538-573)
+        val routeRules = JSONArray()
+        if (!forTest) {
+            routeRules.put(
+                JSONObject()
+                    .put("port", JSONArray().put(53))
+                    .put("action", "hijack-dns")
+            )
+            routeRules.put(
+                JSONObject()
+                    .put("protocol", JSONArray().put("dns"))
+                    .put("action", "hijack-dns")
+            )
+            routeRules.put(
+                JSONObject()
+                    .put("ip_cidr", JSONArray().put("224.0.0.0/3").put("ff00::/8"))
+                    .put("source_ip_cidr", JSONArray().put("224.0.0.0/3").put("ff00::/8"))
+                    .put("action", "reject")
+            )
+
+            if (isVpn) {
+                dnsObj.put(
+                    "fakeip",
+                    JSONObject()
+                        .put("enabled", true)
+                        .put("inet4_range", "198.18.0.0/15")
+                        .put("inet6_range", "fc00::/18")
+                )
+                dnsServers.put(
+                    JSONObject()
+                        .put("tag", "dns-fake")
+                        .put("address", "fakeip")
+                        .put("strategy", "ipv4_only")
+                )
+            }
+
+            if (domainListDnsDirectForce.isNotEmpty()) {
+                dnsRules.put(
+                    JSONObject()
+                        .put("domain", JSONArray(domainListDnsDirectForce.toList()))
+                        .put("server", "dns-direct")
+                )
+            }
+            dnsRules.put(
+                JSONObject()
+                    .put("outbound", JSONArray().put("any"))
+                    .put("server", "dns-direct")
+            )
+            if (isVpn) {
+                dnsRules.put(
+                    JSONObject()
+                        .put("inbound", JSONArray().put("tun-in"))
+                        .put("server", "dns-fake")
+                        .put("disable_cache", true)
+                )
             }
         }
 
-        // Variant 4: Plain NekoBox inbound + outbound (zero extra route/dns rules)
-        runCatching {
-            val root = JSONObject(baseRoot.toString())
-            val obs = root.getJSONArray("outbounds")
-            if (resolvedServerIpv4 != null) {
-                patchServerInOutbounds(obs, rawServerHost, resolvedServerIpv4)
-            }
-            ensureOutboundTag(obs, "direct", "direct")
-            candidates.add("nekobox-plain" to root.toString())
-        }
+        val routeObj = JSONObject()
+            .put("auto_detect_interface", true)
+            .put("final", mainTag)
+            .put("rules", routeRules)
 
-        return candidates
-    }
-
-    private fun patchServerInOutbounds(outbounds: JSONArray, rawHost: String, resolvedIp: String) {
-        if (rawHost.isBlank()) return
-        for (i in 0 until outbounds.length()) {
-            val ob = outbounds.optJSONObject(i) ?: continue
-            if (ob.optString("server", "").trim() == rawHost) {
-                ob.put("server", resolvedIp)
-            }
-        }
+        return JSONObject()
+            .put("log", JSONObject().put("level", "info"))
+            .put("dns", dnsObj)
+            .put("inbounds", inbounds)
+            .put("outbounds", outbounds)
+            .put("route", routeObj)
+            .toString()
     }
 
     private fun ensureOutboundTag(outbounds: JSONArray, tag: String, type: String) {
@@ -918,49 +688,6 @@ object XrayTunnelManager {
             if (outbounds.optJSONObject(i)?.optString("tag") == tag) return
         }
         outbounds.put(JSONObject().put("type", type).put("tag", tag))
-    }
-
-    private fun buildNekoDnsObject(
-        proxyTag: String,
-        physDnsIp: String,
-        rawServerDomain: String
-    ): JSONObject {
-        val servers = JSONArray()
-            .put(
-                JSONObject()
-                    .put("tag", "dns-remote")
-                    .put("address", "tcp://8.8.8.8")
-                    .put("detour", proxyTag)
-                    .put("strategy", "ipv4_only")
-            )
-            .put(
-                JSONObject()
-                    .put("tag", "dns-direct")
-                    .put("address", "udp://$physDnsIp")
-                    .put("detour", "direct")
-                    .put("strategy", "ipv4_only")
-            )
-
-        val rules = JSONArray()
-        if (rawServerDomain.isNotBlank() && !isIpLiteral(rawServerDomain)) {
-            rules.put(
-                JSONObject()
-                    .put("domain", JSONArray().put(rawServerDomain.lowercase()))
-                    .put("server", "dns-direct")
-            )
-        }
-        rules.put(
-            JSONObject()
-                .put("outbound", JSONArray().put("any"))
-                .put("server", "dns-direct")
-        )
-
-        return JSONObject()
-            .put("servers", servers)
-            .put("rules", rules)
-            .put("final", "dns-remote")
-            .put("strategy", "ipv4_only")
-            .put("independent_cache", true)
     }
 
     private fun extractProxyInput(raw: String): String {
@@ -1007,17 +734,49 @@ object XrayTunnelManager {
         return null
     }
 
-    private fun buildBaseConfigJsonObject(
+    private fun extractOrBuildOutbounds(
         input: String,
         overrides: XrayOverrides,
-        listenPort: Int = LOCAL_SOCKS_PORT
-    ): JSONObject {
+        forTest: Boolean
+    ): JSONArray {
+        val domainStrategy = if (forTest) "" else "prefer_ipv4"
         if (input.startsWith("{")) {
             val root = JSONObject(input)
-            return convertOrPatchJson(root, overrides, listenPort)
+            val rawOutbounds = when {
+                root.has("outbounds") -> root.optJSONArray("outbounds") ?: JSONArray()
+                root.has("type") || root.has("protocol") -> JSONArray().put(root)
+                else -> error("JSON config does not contain 'outbounds'")
+            }
+            val cleanOutbounds = JSONArray()
+            val auxTypes = setOf("direct", "block", "dns", "freedom", "blackhole")
+            for (i in 0 until rawOutbounds.length()) {
+                val item = rawOutbounds.optJSONObject(i) ?: continue
+                val isXray = item.has("protocol") || item.has("settings") || item.has("streamSettings")
+                if (isXray) {
+                    val proto = item.optString("protocol", "").lowercase()
+                    if (proto in auxTypes || proto.isBlank()) continue
+                    if (proto in setOf("vless", "vmess", "trojan", "shadowsocks", "socks", "http")) {
+                        val converted = convertXrayOutboundToSingBox(item, overrides)
+                        if (domainStrategy.isNotEmpty()) converted.put("domain_strategy", domainStrategy)
+                        cleanOutbounds.put(converted)
+                    }
+                } else {
+                    val type = item.optString("type", "").lowercase()
+                    if (type in auxTypes || type.isBlank()) continue
+                    val cloned = JSONObject(item.toString())
+                    if (forTest) {
+                        cloned.remove("domain_strategy")
+                    } else if (!cloned.has("domain_strategy") && type != "selector" && type != "urltest") {
+                        cloned.put("domain_strategy", domainStrategy)
+                    }
+                    applyOverridesToSingBoxOutbound(cloned, overrides)
+                    cleanOutbounds.put(cloned)
+                }
+            }
+            return cleanOutbounds
         }
 
-        val outbound = when {
+        val ob = when {
             input.startsWith("vless://", ignoreCase = true) -> parseVless(input, overrides)
             input.startsWith("vmess://", ignoreCase = true) -> parseVmess(input, overrides)
             input.startsWith("trojan://", ignoreCase = true) -> parseTrojan(input, overrides)
@@ -1033,88 +792,10 @@ object XrayTunnelManager {
             input.startsWith("tuic://", ignoreCase = true) -> parseTuic(input, overrides)
             else -> error("Unsupported scheme (use vless://, vmess://, trojan://, ss://, socks://, http(s)://, hy2://, tuic://, or JSON)")
         }
-
-        val listenAddr = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
-        val inbound = JSONObject()
-            .put("type", "mixed")
-            .put("tag", "mixed-in")
-            .put("listen", listenAddr)
-            .put("listen_port", listenPort)
-            .put("sniff", true)
-            .put("sniff_override_destination", false)
-
-        return JSONObject()
-            .put("log", JSONObject().put("level", "info"))
-            .put("inbounds", JSONArray().put(inbound))
-            .put("outbounds", JSONArray().put(outbound))
-    }
-
-    /**
-     * Converts or normalizes ANY pasted JSON config:
-     * 1. Full NekoBox / sing-box JSON (`outbounds` with `"type"`): strips `tun-in`, `local` DNS, `fakeip`,
-     *    and outbound `domain_strategy` (which cause `checkConfig` rejection or EOF in NearChat), keeping
-     *    only the real proxy outbounds and wrapping them in a clean `mixed-in` (127.0.0.1:10808) config.
-     * 2. Full Xray / v2rayNG JSON (`outbounds` with `"protocol"` / `"settings"`): converts all proxy outbounds
-     *    to sing-box format.
-     * 3. Single outbound JSON object (`{"type": "vless", ...}` or `{"protocol": "vless", ...}`): wraps into `outbounds`.
-     */
-    private fun convertOrPatchJson(
-        root: JSONObject,
-        overrides: XrayOverrides,
-        listenPort: Int
-    ): JSONObject {
-        val rawOutbounds = when {
-            root.has("outbounds") -> root.optJSONArray("outbounds") ?: JSONArray()
-            root.has("type") || root.has("protocol") -> JSONArray().put(root)
-            else -> error("JSON config does not contain 'outbounds'")
+        if (domainStrategy.isNotEmpty()) {
+            ob.put("domain_strategy", domainStrategy)
         }
-
-        val cleanOutbounds = JSONArray()
-        val auxTypes = setOf("direct", "block", "dns", "freedom", "blackhole")
-
-        for (i in 0 until rawOutbounds.length()) {
-            val item = rawOutbounds.optJSONObject(i) ?: continue
-            val isXray = item.has("protocol") || item.has("settings") || item.has("streamSettings")
-            if (isXray) {
-                val proto = item.optString("protocol", "").lowercase()
-                if (proto in auxTypes || proto.isBlank()) continue
-                if (proto in setOf("vless", "vmess", "trojan", "shadowsocks", "socks", "http")) {
-                    cleanOutbounds.put(convertXrayOutboundToSingBox(item, overrides))
-                }
-            } else {
-                val type = item.optString("type", "").lowercase()
-                if (type in auxTypes || type.isBlank()) continue
-                val cloned = JSONObject(item.toString())
-                // Remove NekoBox export's domain_strategy on outbound so sing-box forwards domains directly to the proxy server
-                cloned.remove("domain_strategy")
-                applyOverridesToSingBoxOutbound(cloned, overrides)
-                cleanOutbounds.put(cloned)
-            }
-        }
-
-        if (cleanOutbounds.length() == 0) {
-            error("No supported proxy outbound found in JSON config")
-        }
-
-        // Ensure the first outbound has a non-empty tag
-        val firstOb = cleanOutbounds.getJSONObject(0)
-        if (firstOb.optString("tag", "").isBlank()) {
-            firstOb.put("tag", "proxy")
-        }
-
-        val listenAddr = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
-        val inbound = JSONObject()
-            .put("type", "mixed")
-            .put("tag", "mixed-in")
-            .put("listen", listenAddr)
-            .put("listen_port", listenPort)
-            .put("sniff", true)
-            .put("sniff_override_destination", false)
-
-        return JSONObject()
-            .put("log", JSONObject().put("level", "info"))
-            .put("inbounds", JSONArray().put(inbound))
-            .put("outbounds", cleanOutbounds)
+        return JSONArray().put(ob)
     }
 
     private fun convertXrayOutboundToSingBox(
@@ -1176,7 +857,6 @@ object XrayTunnelManager {
         val security = stream.optString("security", "none").lowercase()
         val net = stream.optString("network", "tcp").lowercase()
 
-        // Extract transport host first so TLS SNI can fall back to it if serverName is blank
         val xWs = stream.optJSONObject("wsSettings")
         val wsHdrObj = xWs?.optJSONObject("headers")
         val wsHost = (wsHdrObj?.optString("Host", "")?.ifBlank { wsHdrObj.optString("host", "") } ?: "")

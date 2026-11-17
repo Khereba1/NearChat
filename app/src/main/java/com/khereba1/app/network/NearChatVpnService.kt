@@ -28,8 +28,7 @@ class NearChatVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
     private var watchJob: Job? = null
-    private var currentHostIp: String = ""
-    private var currentSocksPort: Int = 0
+    private var isNekoCoreMode: Boolean = false
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     companion object {
@@ -37,7 +36,13 @@ class NearChatVpnService : VpnService() {
         private const val NOTIF_ID = 1002
         const val EXTRA_HOST_IP = "host_ip"
         const val EXTRA_SOCKS_PORT = "socks_port"
+        const val EXTRA_NEKO_CORE = "neko_core_mode"
         const val ACTION_STOP = "com.khereba1.nearchat.STOP_VPN"
+
+        // NekoBox VpnService VLAN constants
+        const val PRIVATE_VLAN4_CLIENT = "172.19.0.1"
+        const val PRIVATE_VLAN4_ROUTER = "172.19.0.2"
+        const val FAKEDNS_VLAN4_CLIENT = "198.18.0.0"
 
         @Volatile
         private var instance: NearChatVpnService? = null
@@ -45,7 +50,6 @@ class NearChatVpnService : VpnService() {
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning
 
-        /** Lets the tunnel core keep its own outbound sockets outside the VPN (no routing loop). */
         fun protectFd(fd: Int): Boolean {
             return try {
                 instance?.protect(fd) ?: false
@@ -54,9 +58,40 @@ class NearChatVpnService : VpnService() {
             }
         }
 
+        fun waitForInstance(timeoutMs: Long = 3500L): NearChatVpnService? {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                val cur = instance
+                if (cur != null) return cur
+                Thread.sleep(50)
+            }
+            return instance
+        }
+
+        /** Called by NekoBox libcore BoxPlatformInterface.openTun(). */
+        fun openTunFromCore(): Int {
+            val svc = waitForInstance(3500L) ?: throw IllegalStateException("NearChatVpnService not running")
+            return svc.establishNekoTun()
+        }
+
+        fun startNekoVpn(context: Context) {
+            val appContext = context.applicationContext
+            val intent = Intent(appContext, NearChatVpnService::class.java).apply {
+                putExtra(EXTRA_NEKO_CORE, true)
+                putExtra(EXTRA_HOST_IP, "127.0.0.1")
+                putExtra(EXTRA_SOCKS_PORT, XrayTunnelManager.LOCAL_SOCKS_PORT)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                appContext.startForegroundService(intent)
+            } else {
+                appContext.startService(intent)
+            }
+        }
+
         fun start(context: Context, hostIp: String, socksPort: Int = 1080) {
             val appContext = context.applicationContext
             val intent = Intent(appContext, NearChatVpnService::class.java).apply {
+                putExtra(EXTRA_NEKO_CORE, false)
                 putExtra(EXTRA_HOST_IP, hostIp)
                 putExtra(EXTRA_SOCKS_PORT, socksPort)
             }
@@ -81,26 +116,24 @@ class NearChatVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null) {
-            // The system re-created us after the process died. Never resume a stale tunnel:
-            // the SOCKS target (sing-box or the router host) is gone and an empty VPN cuts the internet.
             stopTunnel()
             stopSelf()
             return START_NOT_STICKY
         }
         if (intent.action == ACTION_STOP) {
-            val wasLocalCore = currentHostIp == "127.0.0.1" && currentSocksPort == XrayTunnelManager.LOCAL_SOCKS_PORT
+            val wasNeko = isNekoCoreMode
             stopTunnel()
-            if (wasLocalCore) {
+            if (wasNeko) {
                 runCatching { XrayTunnelManager.stop() }
             }
             stopSelf()
             return START_NOT_STICKY
         }
 
+        val nekoMode = intent.getBooleanExtra(EXTRA_NEKO_CORE, false)
         val hostIp = intent.getStringExtra(EXTRA_HOST_IP)?.trim()?.ifEmpty { "192.168.49.1" } ?: "192.168.49.1"
         val socksPort = intent.getIntExtra(EXTRA_SOCKS_PORT, 1080).coerceIn(1, 65535)
-        currentHostIp = hostIp
-        currentSocksPort = socksPort
+        isNekoCoreMode = nekoMode
 
         ensureChannel()
         val openIntent = PendingIntent.getActivity(
@@ -115,25 +148,92 @@ class NearChatVpnService : VpnService() {
             Intent(this, NearChatVpnService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+        val subtitle = if (nekoMode) {
+            "NekoBox sing-box TUN active"
+        } else {
+            "Routing all apps via $hostIp:$socksPort"
+        }
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload_done)
             .setContentTitle("NearChat VPN Active")
-            .setContentText("Routing all apps via $hostIp:$socksPort")
+            .setContentText(subtitle)
             .setContentIntent(openIntent)
             .addAction(0, getString(R.string.stop_server), stopIntent)
             .setOngoing(true)
             .build()
         startForeground(NOTIF_ID, notif)
 
-        startTunnel(hostIp, socksPort, openIntent)
-        watchLocalTunnel(hostIp, socksPort)
+        if (nekoMode) {
+            // In NekoBox mode, libcore calls openTun() -> establishNekoTun() during box.start()
+            watchNekoCore()
+        } else {
+            startManualTunnel(hostIp, socksPort, openIntent)
+            watchLocalTunnel(hostIp, socksPort)
+        }
         return START_NOT_STICKY
     }
 
     /**
-     * If the VPN points at the built-in sing-box tunnel, tie the VPN's life to the tunnel's life.
-     * Without this, stopping or crashing the core leaves every app routed into a dead port.
+     * Exact port of NekoBox's VpnService.startVpn():
+     * Establishes the TUN fd with 172.19.0.1/30, DNS 172.19.0.2, MTU 9000, and returns fd to libcore.
      */
+    @Synchronized
+    fun establishNekoTun(): Int {
+        try {
+            tunFd?.close()
+        } catch (_: Throwable) {
+        }
+        tunFd = null
+
+        val openIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val builder = Builder()
+            .setConfigureIntent(openIntent)
+            .setSession("NearChat VPN")
+            .setMtu(9000)
+            .addAddress(PRIVATE_VLAN4_CLIENT, 30)
+            .addDnsServer(PRIVATE_VLAN4_ROUTER)
+            .addRoute("0.0.0.0", 0)
+            .addDisallowedApplication(packageName)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.setMetered(false)
+        }
+
+        val phys = PhysicalNetwork.current(this)
+        if (phys != null) {
+            runCatching { builder.setUnderlyingNetworks(arrayOf(phys.network)) }
+        }
+
+        val pfd = builder.establish() ?: throw IllegalStateException("VpnService.Builder.establish() returned null")
+        tunFd = pfd
+        _isRunning.value = true
+
+        PhysicalNetwork.unwatch(this, netCallback)
+        netCallback = PhysicalNetwork.watch(this) { refreshUnderlyingNetwork() }
+        return pfd.fd
+    }
+
+    private fun watchNekoCore() {
+        watchJob?.cancel()
+        watchJob = scope.launch {
+            var seenRunning = false
+            XrayTunnelManager.state.collect { st ->
+                if (st.isRunning) {
+                    seenRunning = true
+                } else if (seenRunning) {
+                    AppLog.log("VPN", "NekoBox core stopped -> stopping VPN")
+                    stopTunnel()
+                    stopSelf()
+                }
+            }
+        }
+    }
+
     private fun watchLocalTunnel(hostIp: String, socksPort: Int) {
         watchJob?.cancel()
         watchJob = null
@@ -153,7 +253,7 @@ class NearChatVpnService : VpnService() {
         }
     }
 
-    private fun startTunnel(hostIp: String, socksPort: Int, configureIntent: PendingIntent) {
+    private fun startManualTunnel(hostIp: String, socksPort: Int, configureIntent: PendingIntent) {
         stopTunnel()
         try {
             val builder = Builder()
@@ -179,7 +279,6 @@ class NearChatVpnService : VpnService() {
             }
 
             val pfd = builder.establish()
-
             if (pfd == null) {
                 AppLog.log("VPN", "VpnService.Builder.establish() returned null")
                 _isRunning.value = false
@@ -231,7 +330,7 @@ class NearChatVpnService : VpnService() {
         PhysicalNetwork.unwatch(this, netCallback)
         netCallback = null
         try {
-            if (TProxyService.TProxyIsRunning()) {
+            if (!isNekoCoreMode && TProxyService.TProxyIsRunning()) {
                 TProxyService.TProxyStopService()
             }
         } catch (_: Throwable) {
@@ -245,7 +344,11 @@ class NearChatVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        val wasNeko = isNekoCoreMode
         stopTunnel()
+        if (wasNeko) {
+            runCatching { XrayTunnelManager.stop() }
+        }
         stopSelf()
     }
 

@@ -109,6 +109,7 @@ object XrayTunnelManager {
         context: Context,
         rawInput: String,
         overrides: XrayOverrides = XrayOverrides(),
+        vpnMode: Boolean = false,
         onReady: (() -> Unit)? = null
     ) {
         _state.value = XrayState(false, "Lite version: install NearChat.apk (Full) for built-in sing-box, or use Upstream SOCKS5 in Host Router.")

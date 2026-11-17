@@ -11,21 +11,42 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK & NDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0'
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;25.0.8775105'
+
+      - name: Cache NekoBox libcore.aar
+        id: libcore-cache
+        uses: actions/cache@v4
+        with:
+          path: app/libs-full/libcore.aar
+          key: nekobox-libcore-v1-${{ hashFiles('libcore/**', 'buildScript/**') }}
+
+      - name: Set up Go for libcore build
+        if: steps.libcore-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.6'
+
+      - name: Build NekoBox libcore.aar
+        if: steps.libcore-cache.outputs.cache-hit != 'true'
+        run: |
+          chmod -R +x run buildScript libcore/*.sh
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/25.0.8775105"
+          ./run lib core
+          ls -lh app/libs-full/libcore.aar
 
       - name: Install Gradle 8.10.2
         run: |
@@ -34,7 +55,7 @@ jobs:
           echo "/opt/gradle-8.10.2/bin" >> "$GITHUB_PATH"
 
       - name: Cache Gradle packages
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.gradle/caches
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties') }}
@@ -47,7 +68,7 @@ jobs:
           mkdir -p app/libs
           gh release download 2.20.0 -R heiher/hev-socks5-tunnel -p "*.aar" -D app/libs
           rm -f app/libs/libv2ray.aar
-          ls -la app/libs
+          ls -la app/libs app/libs-full
 
       - name: Prepare signing key
         env:

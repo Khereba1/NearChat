@@ -1,11 +1,9 @@
 package com.khereba1.app.ui
 
-import android.Manifest
 import android.app.Activity
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.provider.Settings
@@ -31,20 +29,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Call
-import androidx.compose.material.icons.rounded.CallEnd
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Stop
-import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material.icons.rounded.WifiTethering
 import androidx.compose.material3.Button
@@ -81,16 +75,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import com.khereba1.app.PREFS
 import com.khereba1.app.R
 import com.khereba1.app.network.NearChatVpnService
-import com.khereba1.app.network.NetworkUtils
 import com.khereba1.app.network.QrGenerator
 import com.khereba1.app.network.RootHelper
 import com.khereba1.app.network.RootStatus
 import com.khereba1.app.network.RouterBridgeState
-import com.khereba1.app.network.VoiceCallManager
 import com.khereba1.app.network.WifiProxyServer
 import com.khereba1.app.network.XrayOverrides
 import com.khereba1.app.network.XrayTunnelManager
@@ -144,9 +135,6 @@ fun NetworkHubScreen(
     var clientPort by remember {
         mutableStateOf(prefs.getString("vpn_host_port", "1080") ?: "1080")
     }
-    var peerCallIp by remember {
-        mutableStateOf(prefs.getString("call_peer_ip", "192.168.49.1") ?: "192.168.49.1")
-    }
 
     var keepWifiGroup by remember {
         mutableStateOf(prefs.getBoolean("keep_wifi_group", false))
@@ -159,9 +147,7 @@ fun NetworkHubScreen(
 
     val isVpnRunning by NearChatVpnService.isRunning.collectAsState()
     val xrayState by XrayTunnelManager.state.collectAsState()
-    val callState by VoiceCallManager.state.collectAsState()
     val supportsDirectHotspot = remember { WifiProxyServer.supportsDirectWifiHotspot(context) }
-    val localIp = remember { NetworkUtils.getLocalIpAddress() ?: "192.168.49.1" }
 
     val currentOverrides = XrayOverrides(
         hostOverride = hostOverride,
@@ -205,11 +191,7 @@ fun NetworkHubScreen(
                 .putString("vpn_host_port", clientPort)
                 .apply()
         }
-        XrayTunnelManager.start(appContext, xrayConfig, currentOverrides) {
-            if (shouldStartVpn) {
-                NearChatVpnService.start(appContext, "127.0.0.1", XrayTunnelManager.LOCAL_SOCKS_PORT)
-            }
-        }
+        XrayTunnelManager.start(appContext, xrayConfig, currentOverrides, vpnMode = shouldStartVpn)
     }
 
     val xrayVpnPermLauncher = rememberLauncherForActivityResult(
@@ -217,14 +199,6 @@ fun NetworkHubScreen(
     ) { res ->
         if (res.resultCode == Activity.RESULT_OK) {
             launchSingBoxAndVpn()
-        }
-    }
-
-    val callMicLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) {
-            Toast.makeText(context, context.getString(R.string.mic_permission_needed), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -246,7 +220,7 @@ fun NetworkHubScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Live Status Pills Bar
+            // Live Status Pills Bar (Host Router, Client VPN, sing-box)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -272,12 +246,6 @@ fun NetworkHubScreen(
                     icon = Icons.Rounded.Security,
                     onClick = { selectedTab = 2 }
                 )
-                StatusPill(
-                    label = stringResource(R.string.tab_calls),
-                    active = callState.isActive,
-                    icon = Icons.Rounded.Call,
-                    onClick = { selectedTab = 3 }
-                )
             }
 
             TabRow(selectedTabIndex = selectedTab) {
@@ -298,12 +266,6 @@ fun NetworkHubScreen(
                     onClick = { selectedTab = 2 },
                     icon = { Icon(Icons.Rounded.Security, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     text = { Text(stringResource(R.string.tab_xray), maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                )
-                Tab(
-                    selected = selectedTab == 3,
-                    onClick = { selectedTab = 3 },
-                    icon = { Icon(Icons.Rounded.Call, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    text = { Text(stringResource(R.string.tab_calls), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
             }
 
@@ -342,7 +304,6 @@ fun NetworkHubScreen(
                                         Text(stringResource(R.string.open_hotspot_settings))
                                     }
                                 }
-                                // Root status row
                                 if (rootStatus.checked) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -755,7 +716,6 @@ fun NetworkHubScreen(
                             }
                         }
 
-                        // TLS & Header Overrides Card (Hiddify-style Host / SNI / Allow Insecure)
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
@@ -983,98 +943,6 @@ fun NetworkHubScreen(
                                         }
                                         IconButton(onClick = { profiles = XrayTunnelManager.deleteProfile(context, p.id) }) {
                                             Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    3 -> {
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            tonalElevation = 2.dp,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Text(
-                                    text = stringResource(R.string.call_my_ip, localIp),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                if (!callState.isActive) {
-                                    OutlinedTextField(
-                                        value = peerCallIp,
-                                        onValueChange = {
-                                            peerCallIp = it
-                                            prefs.edit().putString("call_peer_ip", it).apply()
-                                        },
-                                        label = { Text(stringResource(R.string.call_peer_ip)) },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                    Button(
-                                        onClick = {
-                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                                VoiceCallManager.startCall(context, peerCallIp)
-                                            } else {
-                                                callMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                            }
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Icon(Icons.Rounded.Call, contentDescription = null)
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(stringResource(R.string.call_start))
-                                    }
-                                    OutlinedButton(
-                                        onClick = {
-                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                                VoiceCallManager.startCall(context, null)
-                                            } else {
-                                                callMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                            }
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text(stringResource(R.string.call_listen))
-                                    }
-                                } else {
-                                    Surface(
-                                        shape = RoundedCornerShape(14.dp),
-                                        color = MaterialTheme.colorScheme.primaryContainer,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                            Text(callState.status, fontWeight = FontWeight.Bold)
-                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                OutlinedButton(
-                                                    onClick = { VoiceCallManager.toggleMute() },
-                                                    modifier = Modifier.weight(1f)
-                                                ) {
-                                                    Icon(Icons.Rounded.MicOff, contentDescription = null, modifier = Modifier.size(18.dp))
-                                                    Spacer(Modifier.width(4.dp))
-                                                    Text(if (callState.isMuted) "Muted" else stringResource(R.string.call_mute))
-                                                }
-                                                OutlinedButton(
-                                                    onClick = { VoiceCallManager.toggleSpeaker(context) },
-                                                    modifier = Modifier.weight(1f)
-                                                ) {
-                                                    Icon(Icons.Rounded.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
-                                                    Spacer(Modifier.width(4.dp))
-                                                    Text(if (callState.isSpeaker) "On" else stringResource(R.string.call_speaker))
-                                                }
-                                            }
-                                            Button(
-                                                onClick = { VoiceCallManager.stopCall(context) },
-                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Icon(Icons.Rounded.CallEnd, contentDescription = null)
-                                                Spacer(Modifier.width(6.dp))
-                                                Text(stringResource(R.string.call_end))
-                                            }
                                         }
                                     }
                                 }
