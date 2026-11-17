@@ -188,8 +188,9 @@ object XrayTunnelManager {
 
     private fun buildConfigJson(input: String, overrides: XrayOverrides): String {
         if (input.startsWith("{")) {
-            JSONObject(input)
-            return input
+            val root = JSONObject(input)
+            sanitizeJsonConfig(root, overrides)
+            return root.toString()
         }
 
         val outbound = when {
@@ -213,6 +214,54 @@ object XrayTunnelManager {
             .put("inbounds", JSONArray().put(inbound))
             .put("outbounds", JSONArray().put(outbound))
             .toString()
+    }
+
+
+    private fun sanitizeJsonConfig(root: JSONObject, overrides: XrayOverrides) {
+        val outbounds = root.optJSONArray("outbounds") ?: return
+        for (i in 0 until outbounds.length()) {
+            val ob = outbounds.optJSONObject(i) ?: continue
+            val settings = ob.optJSONObject("settings")
+            var serverAddr = ""
+            val vnext = settings?.optJSONArray("vnext")
+            if (vnext != null && vnext.length() > 0) {
+                serverAddr = vnext.optJSONObject(0)?.optString("address", "") ?: ""
+            } else {
+                val servers = settings?.optJSONArray("servers")
+                if (servers != null && servers.length() > 0) {
+                    serverAddr = servers.optJSONObject(0)?.optString("address", "") ?: ""
+                }
+            }
+            val stream = ob.optJSONObject("streamSettings") ?: continue
+            val hostOv = overrides.hostOverride.trim()
+            if (hostOv.isNotEmpty()) {
+                val ws = stream.optJSONObject("wsSettings")
+                if (ws != null) {
+                    val headers = ws.optJSONObject("headers") ?: JSONObject().also { ws.put("headers", it) }
+                    headers.put("Host", hostOv)
+                }
+                val hu = stream.optJSONObject("httpupgradeSettings")
+                hu?.put("host", hostOv)
+            }
+            val tls = stream.optJSONObject("tlsSettings")
+            if (tls != null) {
+                val hadInsecure = tls.optBoolean("allowInsecure", false)
+                tls.remove("allowInsecure")
+                val sniOv = overrides.sniOverride.trim()
+                if (sniOv.isNotEmpty()) {
+                    tls.put("serverName", sniOv)
+                }
+                val currentSni = tls.optString("serverName", "")
+                if ((hadInsecure || overrides.allowInsecure) &&
+                    !tls.has("verifyPeerCertByName") &&
+                    !tls.has("pinnedPeerCertSha256") &&
+                    serverAddr.isNotBlank() &&
+                    !serverAddr.equals(currentSni, ignoreCase = true)
+                ) {
+                    tls.put("verifyPeerCertByName", serverAddr)
+                }
+            }
+        }
     }
 
     private fun parseQuery(rawQuery: String?): Map<String, String> {
