@@ -119,4 +119,12 @@
     <string name="call_my_ip">Your Local IP: %1$s</string>
     <string name="today_label">Today</string>
     <string name="yesterday_label">Yesterday</string>
+    <string name="xray_host_override">Host Override (e.g. ea.com)</string>
+    <string name="xray_sni_override">SNI Override (e.g. ea.com)</string>
+    <string name="xray_allow_insecure">Allow Insecure TLS</string>
+    <string name="xray_overrides_title">TLS &amp; Header Overrides</string>
+    <string name="status_on">Active</string>
+    <string name="status_off">Off</string>
+    <string name="paste_label">Paste</string>
+    <string name="clear_label">Clear</string>
 </resources>

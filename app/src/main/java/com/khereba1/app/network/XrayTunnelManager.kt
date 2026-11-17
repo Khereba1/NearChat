@@ -23,10 +23,19 @@ data class XrayState(
     val status: String = ""
 )
 
+data class XrayOverrides(
+    val hostOverride: String = "",
+    val sniOverride: String = "",
+    val allowInsecure: Boolean = false
+)
+
 data class XrayProfile(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
-    val config: String
+    val config: String,
+    val hostOverride: String = "",
+    val sniOverride: String = "",
+    val allowInsecure: Boolean = false
 )
 
 object XrayTunnelManager {
@@ -48,7 +57,10 @@ object XrayTunnelManager {
                 XrayProfile(
                     id = o.optString("id", UUID.randomUUID().toString()),
                     name = o.optString("name", "Profile"),
-                    config = o.optString("config", "")
+                    config = o.optString("config", ""),
+                    hostOverride = o.optString("hostOverride", ""),
+                    sniOverride = o.optString("sniOverride", ""),
+                    allowInsecure = o.optBoolean("allowInsecure", false)
                 )
             }
         } catch (_: Throwable) {
@@ -56,9 +68,22 @@ object XrayTunnelManager {
         }
     }
 
-    fun saveProfile(context: Context, name: String, config: String): List<XrayProfile> {
+    fun saveProfile(
+        context: Context,
+        name: String,
+        config: String,
+        overrides: XrayOverrides = XrayOverrides()
+    ): List<XrayProfile> {
         val list = loadProfiles(context).toMutableList()
-        list.add(XrayProfile(name = name.trim().ifEmpty { "Profile ${list.size + 1}" }, config = config.trim()))
+        list.add(
+            XrayProfile(
+                name = name.trim().ifEmpty { "Profile ${list.size + 1}" },
+                config = config.trim(),
+                hostOverride = overrides.hostOverride.trim(),
+                sniOverride = overrides.sniOverride.trim(),
+                allowInsecure = overrides.allowInsecure
+            )
+        )
         persistProfiles(context, list)
         return list
     }
@@ -72,24 +97,40 @@ object XrayTunnelManager {
     private fun persistProfiles(context: Context, list: List<XrayProfile>) {
         val arr = JSONArray()
         for (p in list) {
-            arr.put(JSONObject().put("id", p.id).put("name", p.name).put("config", p.config))
+            arr.put(
+                JSONObject()
+                    .put("id", p.id)
+                    .put("name", p.name)
+                    .put("config", p.config)
+                    .put("hostOverride", p.hostOverride)
+                    .put("sniOverride", p.sniOverride)
+                    .put("allowInsecure", p.allowInsecure)
+            )
         }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(PREF_PROFILES, arr.toString()).apply()
     }
 
-    suspend fun testPing(context: Context, rawInput: String): Result<Long> = withContext(Dispatchers.IO) {
+    suspend fun testPing(
+        context: Context,
+        rawInput: String,
+        overrides: XrayOverrides = XrayOverrides()
+    ): Result<Long> = withContext(Dispatchers.IO) {
         runCatching {
             if (!envInitialized) {
                 Libv2ray.initCoreEnv(context.filesDir.absolutePath, "")
                 envInitialized = true
             }
-            val cfg = buildConfigJson(rawInput.trim())
+            val cfg = buildConfigJson(rawInput.trim(), overrides)
             Libv2ray.measureOutboundDelay(cfg, "https://www.gstatic.com/generate_204")
         }
     }
 
-    fun start(context: Context, rawInput: String) {
+    fun start(
+        context: Context,
+        rawInput: String,
+        overrides: XrayOverrides = XrayOverrides()
+    ) {
         stop()
         val trimmed = rawInput.trim()
         if (trimmed.isEmpty()) {
@@ -98,7 +139,7 @@ object XrayTunnelManager {
         }
 
         val configJson = try {
-            buildConfigJson(trimmed)
+            buildConfigJson(trimmed, overrides)
         } catch (e: Throwable) {
             AppLog.log("XRAY", "Config parse error", e)
             _state.value = XrayState(false, "Invalid config: ${e.message}")
@@ -145,16 +186,16 @@ object XrayTunnelManager {
         _state.value = XrayState(false, "")
     }
 
-    private fun buildConfigJson(input: String): String {
+    private fun buildConfigJson(input: String, overrides: XrayOverrides): String {
         if (input.startsWith("{")) {
             JSONObject(input)
             return input
         }
 
         val outbound = when {
-            input.startsWith("vless://", ignoreCase = true) -> parseVless(input)
-            input.startsWith("vmess://", ignoreCase = true) -> parseVmess(input)
-            input.startsWith("trojan://", ignoreCase = true) -> parseTrojan(input)
+            input.startsWith("vless://", ignoreCase = true) -> parseVless(input, overrides)
+            input.startsWith("vmess://", ignoreCase = true) -> parseVmess(input, overrides)
+            input.startsWith("trojan://", ignoreCase = true) -> parseTrojan(input, overrides)
             input.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(input)
             input.startsWith("socks://", ignoreCase = true) -> parseSocksUri(input)
             else -> error("Unsupported scheme (use vless://, vmess://, trojan://, ss://, socks://, or JSON)")
@@ -177,24 +218,34 @@ object XrayTunnelManager {
     private fun parseQuery(rawQuery: String?): Map<String, String> {
         if (rawQuery.isNullOrBlank()) return emptyMap()
         return rawQuery.split("&").mapNotNull { pair ->
-            val idx = pair.indexOf('=')
+            val idx = pair.indexOf(=)
             if (idx <= 0) null
             else URLDecoder.decode(pair.substring(0, idx), "UTF-8") to
                 URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
         }.toMap()
     }
 
-    private fun buildStreamSettings(q: Map<String, String>, defaultHost: String): JSONObject {
+    private fun buildStreamSettings(
+        q: Map<String, String>,
+        defaultHost: String,
+        overrides: XrayOverrides
+    ): JSONObject {
         val network = (q["type"] ?: "tcp").lowercase()
         val security = (q["security"] ?: "none").lowercase()
         val stream = JSONObject().put("network", network).put("security", security)
 
+        val effectiveHost = overrides.hostOverride.trim().ifEmpty { q["host"] ?: "" }
+        val effectiveSni = overrides.sniOverride.trim()
+            .ifEmpty { q["sni"] ?: effectiveHost.ifEmpty { defaultHost } }
+        val linkInsecure = (q["allowInsecure"] ?: q["insecure"] ?: "").lowercase()
+        val effectiveInsecure = overrides.allowInsecure ||
+            linkInsecure == "1" || linkInsecure == "true"
+
         when (network) {
             "ws" -> {
                 val ws = JSONObject().put("path", q["path"] ?: "/")
-                val host = q["host"]
-                if (!host.isNullOrBlank()) {
-                    ws.put("headers", JSONObject().put("Host", host))
+                if (effectiveHost.isNotBlank()) {
+                    ws.put("headers", JSONObject().put("Host", effectiveHost))
                 }
                 stream.put("wsSettings", ws)
             }
@@ -206,16 +257,17 @@ object XrayTunnelManager {
             }
             "httpupgrade" -> {
                 val hu = JSONObject().put("path", q["path"] ?: "/")
-                val host = q["host"]
-                if (!host.isNullOrBlank()) hu.put("host", host)
+                if (effectiveHost.isNotBlank()) hu.put("host", effectiveHost)
                 stream.put("httpupgradeSettings", hu)
             }
         }
 
         when (security) {
             "tls" -> {
-                val tls = JSONObject()
-                    .put("serverName", q["sni"] ?: q["host"] ?: defaultHost)
+                val tls = JSONObject().put("serverName", effectiveSni)
+                if (effectiveInsecure) {
+                    tls.put("allowInsecure", true)
+                }
                 val fp = q["fp"]
                 if (!fp.isNullOrBlank()) tls.put("fingerprint", fp)
                 val alpn = q["alpn"]
@@ -226,7 +278,7 @@ object XrayTunnelManager {
             }
             "reality" -> {
                 val reality = JSONObject()
-                    .put("serverName", q["sni"] ?: defaultHost)
+                    .put("serverName", effectiveSni)
                     .put("fingerprint", q["fp"] ?: "chrome")
                     .put("publicKey", q["pbk"] ?: "")
                     .put("shortId", q["sid"] ?: "")
@@ -236,7 +288,7 @@ object XrayTunnelManager {
         return stream
     }
 
-    private fun parseVless(raw: String): JSONObject {
+    private fun parseVless(raw: String, overrides: XrayOverrides): JSONObject {
         val uri = URI(raw)
         val uuid = uri.userInfo ?: error("Missing UUID")
         val host = uri.host ?: error("Missing host")
@@ -258,10 +310,10 @@ object XrayTunnelManager {
             .put("tag", "proxy")
             .put("protocol", "vless")
             .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
-            .put("streamSettings", buildStreamSettings(q, host))
+            .put("streamSettings", buildStreamSettings(q, host, overrides))
     }
 
-    private fun parseVmess(raw: String): JSONObject {
+    private fun parseVmess(raw: String, overrides: XrayOverrides): JSONObject {
         val b64 = raw.removePrefix("vmess://").trim()
         val jsonText = String(Base64.decode(b64, Base64.DEFAULT), StandardCharsets.UTF_8)
         val obj = JSONObject(jsonText)
@@ -277,6 +329,7 @@ object XrayTunnelManager {
         if (obj.has("path")) q["path"] = obj.optString("path")
         if (obj.has("sni")) q["sni"] = obj.optString("sni")
         if (obj.has("fp")) q["fp"] = obj.optString("fp")
+        if (obj.optBoolean("allowInsecure", false)) q["allowInsecure"] = "1"
 
         val user = JSONObject()
             .put("id", uuid)
@@ -292,10 +345,10 @@ object XrayTunnelManager {
             .put("tag", "proxy")
             .put("protocol", "vmess")
             .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
-            .put("streamSettings", buildStreamSettings(q, host))
+            .put("streamSettings", buildStreamSettings(q, host, overrides))
     }
 
-    private fun parseTrojan(raw: String): JSONObject {
+    private fun parseTrojan(raw: String, overrides: XrayOverrides): JSONObject {
         val uri = URI(raw)
         val pass = uri.userInfo ?: error("Missing password")
         val host = uri.host ?: error("Missing host")
@@ -312,7 +365,7 @@ object XrayTunnelManager {
             .put("tag", "proxy")
             .put("protocol", "trojan")
             .put("settings", JSONObject().put("servers", JSONArray().put(server)))
-            .put("streamSettings", buildStreamSettings(q, host))
+            .put("streamSettings", buildStreamSettings(q, host, overrides))
     }
 
     private fun parseShadowsocks(raw: String): JSONObject {

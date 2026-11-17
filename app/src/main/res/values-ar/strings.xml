@@ -115,4 +115,12 @@
     <string name="call_my_ip">عنوانك المحلي: %1$s</string>
     <string name="today_label">اليوم</string>
     <string name="yesterday_label">أمس</string>
+    <string name="xray_host_override">تعديل الـ Host (مثلاً ea.com)</string>
+    <string name="xray_sni_override">تعديل الـ SNI (مثلاً ea.com)</string>
+    <string name="xray_allow_insecure">تفعيل Allow Insecure (تخطي فحص الشهادة)</string>
+    <string name="xray_overrides_title">تعديلات التشفير والهيدر (TLS / Host)</string>
+    <string name="status_on">شغال</string>
+    <string name="status_off">مقفول</string>
+    <string name="paste_label">لصق</string>
+    <string name="clear_label">مسح</string>
 </resources>

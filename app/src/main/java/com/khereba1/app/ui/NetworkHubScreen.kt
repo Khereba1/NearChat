@@ -2,6 +2,7 @@ package com.khereba1.app.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,6 +13,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,11 +31,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.CallEnd
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.MicOff
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Router
+import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material.icons.rounded.WifiTethering
@@ -47,6 +55,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -62,6 +71,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -75,6 +85,7 @@ import com.khereba1.app.network.NetworkUtils
 import com.khereba1.app.network.RouterBridgeState
 import com.khereba1.app.network.VoiceCallManager
 import com.khereba1.app.network.WifiProxyServer
+import com.khereba1.app.network.XrayOverrides
 import com.khereba1.app.network.XrayTunnelManager
 import kotlinx.coroutines.launch
 
@@ -100,6 +111,15 @@ fun NetworkHubScreen(
     var xrayConfig by remember {
         mutableStateOf(prefs.getString("xray_config", "") ?: "")
     }
+    var hostOverride by remember {
+        mutableStateOf(prefs.getString("xray_host_override", "") ?: "")
+    }
+    var sniOverride by remember {
+        mutableStateOf(prefs.getString("xray_sni_override", "") ?: "")
+    }
+    var allowInsecure by remember {
+        mutableStateOf(prefs.getBoolean("xray_allow_insecure", false))
+    }
     var profileName by remember { mutableStateOf("") }
     var profiles by remember { mutableStateOf(XrayTunnelManager.loadProfiles(context)) }
     var pingResult by remember { mutableStateOf("") }
@@ -119,6 +139,12 @@ fun NetworkHubScreen(
     val callState by VoiceCallManager.state.collectAsState()
     val supportsDirectHotspot = remember { WifiProxyServer.supportsDirectWifiHotspot(context) }
     val localIp = remember { NetworkUtils.getLocalIpAddress() ?: "192.168.49.1" }
+
+    val currentOverrides = XrayOverrides(
+        hostOverride = hostOverride,
+        sniOverride = sniOverride,
+        allowInsecure = allowInsecure
+    )
 
     val vpnPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -155,25 +181,63 @@ fun NetworkHubScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Live Status Pills Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StatusPill(
+                    label = stringResource(R.string.tab_router),
+                    active = routerState.isRunning,
+                    icon = Icons.Rounded.Router,
+                    onClick = { selectedTab = 0 }
+                )
+                StatusPill(
+                    label = stringResource(R.string.tab_vpn),
+                    active = isVpnRunning,
+                    icon = Icons.Rounded.VpnKey,
+                    onClick = { selectedTab = 1 }
+                )
+                StatusPill(
+                    label = stringResource(R.string.tab_xray),
+                    active = xrayState.isRunning,
+                    icon = Icons.Rounded.Security,
+                    onClick = { selectedTab = 2 }
+                )
+                StatusPill(
+                    label = stringResource(R.string.tab_calls),
+                    active = callState.isActive,
+                    icon = Icons.Rounded.Call,
+                    onClick = { selectedTab = 3 }
+                )
+            }
+
             TabRow(selectedTabIndex = selectedTab) {
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
+                    icon = { Icon(Icons.Rounded.Router, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     text = { Text(stringResource(R.string.tab_router), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
+                    icon = { Icon(Icons.Rounded.VpnKey, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     text = { Text(stringResource(R.string.tab_vpn), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
+                    icon = { Icon(Icons.Rounded.Security, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     text = { Text(stringResource(R.string.tab_xray), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
                 Tab(
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
+                    icon = { Icon(Icons.Rounded.Call, contentDescription = null, modifier = Modifier.size(18.dp)) },
                     text = { Text(stringResource(R.string.tab_calls), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
             }
@@ -188,11 +252,11 @@ fun NetworkHubScreen(
                 when (selectedTab) {
                     0 -> {
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
                                     text = stringResource(
                                         if (supportsDirectHotspot) R.string.hw_direct_supported
@@ -217,53 +281,61 @@ fun NetworkHubScreen(
                         }
 
                         if (!routerState.isRunning) {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                OutlinedTextField(
-                                    value = customPass,
-                                    onValueChange = {
-                                        customPass = it
-                                        prefs.edit().putString("router_pass", it).apply()
-                                    },
-                                    label = { Text(stringResource(R.string.router_custom_pass)) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            OutlinedTextField(
-                                value = upstreamSocks,
-                                onValueChange = {
-                                    upstreamSocks = it
-                                    prefs.edit().putString("upstream_socks", it).apply()
-                                },
-                                label = { Text(stringResource(R.string.upstream_socks_label)) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            if (isVpnRunning) {
-                                Text(
-                                    text = stringResource(R.string.stop_vpn_first),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                            Button(
-                                enabled = !isVpnRunning,
-                                onClick = onStartRouter,
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                tonalElevation = 2.dp,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Icon(Icons.Rounded.Router, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text(stringResource(R.string.router_start))
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                        OutlinedTextField(
+                                            value = customPass,
+                                            onValueChange = {
+                                                customPass = it
+                                                prefs.edit().putString("router_pass", it).apply()
+                                            },
+                                            label = { Text(stringResource(R.string.router_custom_pass)) },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                    OutlinedTextField(
+                                        value = upstreamSocks,
+                                        onValueChange = {
+                                            upstreamSocks = it
+                                            prefs.edit().putString("upstream_socks", it).apply()
+                                        },
+                                        label = { Text(stringResource(R.string.upstream_socks_label)) },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    if (isVpnRunning) {
+                                        Text(
+                                            text = stringResource(R.string.stop_vpn_first),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                    Button(
+                                        enabled = !isVpnRunning,
+                                        onClick = onStartRouter,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Rounded.PlayArrow, contentDescription = null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(stringResource(R.string.router_start))
+                                    }
+                                }
                             }
                         } else {
                             val httpAddr = "${routerState.proxyHost}:${routerState.proxyPort}"
                             val socksAddr = "${routerState.proxyHost}:${routerState.socksPort}"
                             Surface(
-                                shape = RoundedCornerShape(14.dp),
+                                shape = RoundedCornerShape(16.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text("HTTP Proxy:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
@@ -286,15 +358,15 @@ fun NetworkHubScreen(
                             }
                             if (routerState.p2pSsid.isNotEmpty()) {
                                 Surface(
-                                    shape = RoundedCornerShape(14.dp),
+                                    shape = RoundedCornerShape(16.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(stringResource(R.string.router_p2p_label), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                            Text("SSID: ${routerState.p2pSsid}")
-                                            Text("Pass: ${routerState.p2pPass}")
+                                            Text("SSID: ${routerState.p2pSsid}", fontWeight = FontWeight.Medium)
+                                            Text("Pass: ${routerState.p2pPass}", fontWeight = FontWeight.Medium)
                                         }
                                         IconButton(onClick = { copyToClipboard(context, routerState.p2pPass) }) {
                                             Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -304,76 +376,181 @@ fun NetworkHubScreen(
                             } else if (routerState.p2pError.isNotEmpty()) {
                                 Text(routerState.p2pError, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                             }
-                            OutlinedButton(onClick = onStopRouter, modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = onStopRouter,
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Rounded.Stop, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
                                 Text(stringResource(R.string.router_stop))
                             }
                         }
                     }
 
                     1 -> {
-                        Text(stringResource(R.string.vpn_client_section), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        if (!isVpnRunning) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(
-                                    value = clientHostIp,
-                                    onValueChange = {
-                                        clientHostIp = it
-                                        prefs.edit().putString("vpn_host_ip", it).apply()
-                                    },
-                                    label = { Text(stringResource(R.string.vpn_host_ip)) },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(2f)
-                                )
-                                OutlinedTextField(
-                                    value = clientPort,
-                                    onValueChange = {
-                                        clientPort = it.filter { ch -> ch.isDigit() }
-                                        prefs.edit().putString("vpn_host_port", clientPort).apply()
-                                    },
-                                    label = { Text(stringResource(R.string.vpn_port_label)) },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            Button(
-                                enabled = !routerState.isRunning,
-                                onClick = {
-                                    val prep = VpnService.prepare(context)
-                                    if (prep != null) {
-                                        vpnPermLauncher.launch(prep)
-                                    } else {
-                                        val portNum = clientPort.trim().toIntOrNull()?.coerceIn(1, 65535) ?: 1080
-                                        NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, portNum)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            tonalElevation = 2.dp,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(stringResource(R.string.vpn_client_section), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                if (!isVpnRunning) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = clientHostIp,
+                                            onValueChange = {
+                                                clientHostIp = it
+                                                prefs.edit().putString("vpn_host_ip", it).apply()
+                                            },
+                                            label = { Text(stringResource(R.string.vpn_host_ip)) },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(2f)
+                                        )
+                                        OutlinedTextField(
+                                            value = clientPort,
+                                            onValueChange = {
+                                                clientPort = it.filter { ch -> ch.isDigit() }
+                                                prefs.edit().putString("vpn_host_port", clientPort).apply()
+                                            },
+                                            label = { Text(stringResource(R.string.vpn_port_label)) },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
                                     }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Rounded.VpnKey, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text(stringResource(R.string.vpn_connect))
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = { NearChatVpnService.stop(context) },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(stringResource(R.string.vpn_disconnect))
+                                    Button(
+                                        enabled = !routerState.isRunning,
+                                        onClick = {
+                                            val prep = VpnService.prepare(context)
+                                            if (prep != null) {
+                                                vpnPermLauncher.launch(prep)
+                                            } else {
+                                                val portNum = clientPort.trim().toIntOrNull()?.coerceIn(1, 65535) ?: 1080
+                                                NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, portNum)
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Rounded.VpnKey, contentDescription = null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(stringResource(R.string.vpn_connect))
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { NearChatVpnService.stop(context) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Rounded.Stop, contentDescription = null)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(stringResource(R.string.vpn_disconnect))
+                                    }
+                                }
                             }
                         }
                     }
 
                     2 -> {
-                        Text(stringResource(R.string.xray_section), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        OutlinedTextField(
-                            value = xrayConfig,
-                            onValueChange = {
-                                xrayConfig = it
-                                prefs.edit().putString("xray_config", it).apply()
-                            },
-                            label = { Text(stringResource(R.string.xray_link_label)) },
-                            maxLines = 4,
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            tonalElevation = 2.dp,
                             modifier = Modifier.fillMaxWidth()
-                        )
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        stringResource(R.string.xray_section),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(onClick = {
+                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = cm.primaryClip?.getItemAt(0)?.text?.toString()
+                                        if (!clip.isNullOrBlank()) {
+                                            xrayConfig = clip
+                                            prefs.edit().putString("xray_config", clip).apply()
+                                        }
+                                    }) {
+                                        Icon(Icons.Rounded.ContentPaste, contentDescription = stringResource(R.string.paste_label), modifier = Modifier.size(18.dp))
+                                    }
+                                    if (xrayConfig.isNotEmpty()) {
+                                        IconButton(onClick = {
+                                            xrayConfig = ""
+                                            prefs.edit().putString("xray_config", "").apply()
+                                        }) {
+                                            Icon(Icons.Rounded.Clear, contentDescription = stringResource(R.string.clear_label), modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
+                                OutlinedTextField(
+                                    value = xrayConfig,
+                                    onValueChange = {
+                                        xrayConfig = it
+                                        prefs.edit().putString("xray_config", it).apply()
+                                    },
+                                    label = { Text(stringResource(R.string.xray_link_label)) },
+                                    maxLines = 4,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
+                        // TLS & Header Overrides Card (Hiddify-style Host / SNI / Allow Insecure)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = stringResource(R.string.xray_overrides_title),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        value = hostOverride,
+                                        onValueChange = {
+                                            hostOverride = it
+                                            prefs.edit().putString("xray_host_override", it).apply()
+                                        },
+                                        label = { Text(stringResource(R.string.xray_host_override)) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = sniOverride,
+                                        onValueChange = {
+                                            sniOverride = it
+                                            prefs.edit().putString("xray_sni_override", it).apply()
+                                        },
+                                        label = { Text(stringResource(R.string.xray_sni_override)) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.xray_allow_insecure),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Switch(
+                                        checked = allowInsecure,
+                                        onCheckedChange = {
+                                            allowInsecure = it
+                                            prefs.edit().putBoolean("xray_allow_insecure", it).apply()
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(
                                 value = profileName,
@@ -385,7 +562,7 @@ fun NetworkHubScreen(
                             OutlinedButton(
                                 onClick = {
                                     if (xrayConfig.isNotBlank()) {
-                                        profiles = XrayTunnelManager.saveProfile(context, profileName, xrayConfig)
+                                        profiles = XrayTunnelManager.saveProfile(context, profileName, xrayConfig, currentOverrides)
                                         profileName = ""
                                     }
                                 },
@@ -394,12 +571,13 @@ fun NetworkHubScreen(
                                 Text(stringResource(R.string.save_profile))
                             }
                         }
+
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick = {
                                     pingResult = "Testing…"
                                     scope.launch {
-                                        XrayTunnelManager.testPing(context, xrayConfig)
+                                        XrayTunnelManager.testPing(context, xrayConfig, currentOverrides)
                                             .onSuccess { ms -> pingResult = "Ping: ${ms} ms" }
                                             .onFailure { e -> pingResult = "Ping failed: ${e.message}" }
                                     }
@@ -413,33 +591,46 @@ fun NetworkHubScreen(
                             if (!xrayState.isRunning) {
                                 Button(
                                     onClick = {
-                                        XrayTunnelManager.start(context, xrayConfig)
+                                        XrayTunnelManager.start(context, xrayConfig, currentOverrides)
                                         val localAddr = "127.0.0.1:${XrayTunnelManager.LOCAL_SOCKS_PORT}"
                                         upstreamSocks = localAddr
                                         prefs.edit().putString("upstream_socks", localAddr).apply()
                                     },
                                     modifier = Modifier.weight(1f)
                                 ) {
+                                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
                                     Text(stringResource(R.string.xray_start), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                             } else {
-                                OutlinedButton(
+                                Button(
                                     onClick = { XrayTunnelManager.stop() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                                     modifier = Modifier.weight(1f)
                                 ) {
+                                    Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
                                     Text(stringResource(R.string.xray_stop))
                                 }
                             }
                         }
+
                         if (pingResult.isNotEmpty()) {
                             Text(pingResult, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         }
                         if (xrayState.status.isNotEmpty()) {
-                            Text(
-                                text = xrayState.status,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (xrayState.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (xrayState.isRunning) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = xrayState.status,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (xrayState.isRunning) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
                         }
 
                         if (profiles.isNotEmpty()) {
@@ -447,20 +638,41 @@ fun NetworkHubScreen(
                             Text(stringResource(R.string.saved_profiles), fontWeight = FontWeight.SemiBold)
                             profiles.forEach { p ->
                                 Surface(
-                                    shape = RoundedCornerShape(12.dp),
+                                    shape = RoundedCornerShape(14.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
                                             xrayConfig = p.config
-                                            prefs.edit().putString("xray_config", p.config).apply()
+                                            hostOverride = p.hostOverride
+                                            sniOverride = p.sniOverride
+                                            allowInsecure = p.allowInsecure
+                                            prefs.edit()
+                                                .putString("xray_config", p.config)
+                                                .putString("xray_host_override", p.hostOverride)
+                                                .putString("xray_sni_override", p.sniOverride)
+                                                .putBoolean("xray_allow_insecure", p.allowInsecure)
+                                                .apply()
                                         }
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(p.name, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(p.name, fontWeight = FontWeight.SemiBold)
+                                            if (p.sniOverride.isNotEmpty() || p.hostOverride.isNotEmpty() || p.allowInsecure) {
+                                                Text(
+                                                    text = buildString {
+                                                        if (p.hostOverride.isNotEmpty()) append("Host: ${p.hostOverride} ")
+                                                        if (p.sniOverride.isNotEmpty()) append("SNI: ${p.sniOverride} ")
+                                                        if (p.allowInsecure) append("[Insecure]")
+                                                    }.trim(),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
                                         IconButton(onClick = { profiles = XrayTunnelManager.deleteProfile(context, p.id) }) {
                                             Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                                         }
@@ -471,83 +683,91 @@ fun NetworkHubScreen(
                     }
 
                     3 -> {
-                        Text(
-                            text = stringResource(R.string.call_my_ip, localIp),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        if (!callState.isActive) {
-                            OutlinedTextField(
-                                value = peerCallIp,
-                                onValueChange = {
-                                    peerCallIp = it
-                                    prefs.edit().putString("call_peer_ip", it).apply()
-                                },
-                                label = { Text(stringResource(R.string.call_peer_ip)) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Button(
-                                onClick = {
-                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                        VoiceCallManager.startCall(context, peerCallIp)
-                                    } else {
-                                        callMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Rounded.Call, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text(stringResource(R.string.call_start))
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                        VoiceCallManager.startCall(context, null)
-                                    } else {
-                                        callMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(stringResource(R.string.call_listen))
-                            }
-                        } else {
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    Text(callState.status, fontWeight = FontWeight.Bold)
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        OutlinedButton(
-                                            onClick = { VoiceCallManager.toggleMute() },
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(Icons.Rounded.MicOff, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(Modifier.width(4.dp))
-                                            Text(if (callState.isMuted) "Muted" else stringResource(R.string.call_mute))
-                                        }
-                                        OutlinedButton(
-                                            onClick = { VoiceCallManager.toggleSpeaker(context) },
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Icon(Icons.Rounded.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
-                                            Spacer(Modifier.width(4.dp))
-                                            Text(if (callState.isSpeaker) "On" else stringResource(R.string.call_speaker))
-                                        }
-                                    }
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            tonalElevation = 2.dp,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = stringResource(R.string.call_my_ip, localIp),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                if (!callState.isActive) {
+                                    OutlinedTextField(
+                                        value = peerCallIp,
+                                        onValueChange = {
+                                            peerCallIp = it
+                                            prefs.edit().putString("call_peer_ip", it).apply()
+                                        },
+                                        label = { Text(stringResource(R.string.call_peer_ip)) },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
                                     Button(
-                                        onClick = { VoiceCallManager.stopCall(context) },
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                        onClick = {
+                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                                VoiceCallManager.startCall(context, peerCallIp)
+                                            } else {
+                                                callMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            }
+                                        },
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Icon(Icons.Rounded.CallEnd, contentDescription = null)
+                                        Icon(Icons.Rounded.Call, contentDescription = null)
                                         Spacer(Modifier.width(6.dp))
-                                        Text(stringResource(R.string.call_end))
+                                        Text(stringResource(R.string.call_start))
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                                VoiceCallManager.startCall(context, null)
+                                            } else {
+                                                callMicLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(stringResource(R.string.call_listen))
+                                    }
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                            Text(callState.status, fontWeight = FontWeight.Bold)
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                OutlinedButton(
+                                                    onClick = { VoiceCallManager.toggleMute() },
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Icon(Icons.Rounded.MicOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Text(if (callState.isMuted) "Muted" else stringResource(R.string.call_mute))
+                                                }
+                                                OutlinedButton(
+                                                    onClick = { VoiceCallManager.toggleSpeaker(context) },
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Icon(Icons.Rounded.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Text(if (callState.isSpeaker) "On" else stringResource(R.string.call_speaker))
+                                                }
+                                            }
+                                            Button(
+                                                onClick = { VoiceCallManager.stopCall(context) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Icon(Icons.Rounded.CallEnd, contentDescription = null)
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(stringResource(R.string.call_end))
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -555,6 +775,39 @@ fun NetworkHubScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun StatusPill(
+    label: String,
+    active: Boolean,
+    icon: ImageVector,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = if (active) Icons.Rounded.CheckCircle else icon,
+                contentDescription = null,
+                tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = "$label: ${stringResource(if (active) R.string.status_on else R.string.status_off)}",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                color = if (active) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
