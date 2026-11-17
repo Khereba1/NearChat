@@ -15,6 +15,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 data class VoiceCallState(
     val isActive: Boolean = false,
@@ -87,8 +88,7 @@ object VoiceCallManager {
             rec.startRecording()
             track.play()
 
-            @Volatile
-            var remoteAddr: InetAddress? = if (cleanIp != null) InetAddress.getByName(cleanIp) else null
+            val remoteAddr = AtomicReference<InetAddress?>(if (cleanIp != null) InetAddress.getByName(cleanIp) else null)
 
             _state.value = VoiceCallState(
                 isActive = true,
@@ -102,8 +102,8 @@ object VoiceCallManager {
                     try {
                         val pkt = DatagramPacket(buf, buf.size)
                         ds.receive(pkt)
-                        if (remoteAddr == null) {
-                            remoteAddr = pkt.address
+                        if (remoteAddr.get() == null) {
+                            remoteAddr.set(pkt.address)
                             _state.value = _state.value.copy(status = "Connected: ${pkt.address.hostAddress}")
                         }
                         if (pkt.length > 0) {
@@ -120,7 +120,7 @@ object VoiceCallManager {
                 while (active.get()) {
                     try {
                         val read = rec.read(buf, 0, buf.size)
-                        val target = remoteAddr
+                        val target = remoteAddr.get()
                         if (read > 0 && target != null && !_state.value.isMuted) {
                             ds.send(DatagramPacket(buf, read, target, CALL_PORT))
                         }
