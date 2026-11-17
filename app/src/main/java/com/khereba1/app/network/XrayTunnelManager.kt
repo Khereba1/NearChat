@@ -218,7 +218,7 @@ object XrayTunnelManager {
     private fun parseQuery(rawQuery: String?): Map<String, String> {
         if (rawQuery.isNullOrBlank()) return emptyMap()
         return rawQuery.split("&").mapNotNull { pair ->
-            val idx = pair.indexOf(=)
+            val idx = pair.indexOf('=')
             if (idx <= 0) null
             else URLDecoder.decode(pair.substring(0, idx), "UTF-8") to
                 URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
