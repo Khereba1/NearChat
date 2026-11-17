@@ -22,31 +22,48 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK & NDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-35 build-tools;35.0.0 ndk;25.0.8775105'
-
-      - name: Cache NekoBox libcore.aar
+      - name: Restore NekoBox libcore.aar from Cache
         id: libcore-cache
         uses: actions/cache@v4
         with:
           path: app/libs-full/libcore.aar
           key: nekobox-libcore-v1-${{ hashFiles('libcore/**', 'buildScript/**') }}
 
-      - name: Set up Go for libcore build
+      - name: Try downloading prebuilt libcore.aar from Releases if Cache missed
         if: steps.libcore-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p app/libs-full
+          gh release download prebuilt-libs -p "libcore.aar" -D app/libs-full --clobber || true
+
+      - name: Set up Android NDK & Go (Only if libcore.aar is missing)
+        if: hashFiles('app/libs-full/libcore.aar') == ''
         uses: actions/setup-go@v5
         with:
           go-version: '1.23.6'
 
-      - name: Build NekoBox libcore.aar
-        if: steps.libcore-cache.outputs.cache-hit != 'true'
+      - name: Build NekoBox libcore.aar (Only if missing)
+        if: hashFiles('app/libs-full/libcore.aar') == ''
         run: |
-          chmod -R +x run buildScript libcore/*.sh
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;25.0.8775105" >/dev/null
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/25.0.8775105"
+          chmod -R +x run buildScript libcore/*.sh
           ./run lib core
           ls -lh app/libs-full/libcore.aar
+
+      - name: Save libcore.aar permanently to prebuilt-libs Release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -f app/libs-full/libcore.aar ]; then
+            if ! gh release view prebuilt-libs >/dev/null 2>&1; then
+              gh release create prebuilt-libs app/libs-full/libcore.aar --title "Prebuilt libcore.aar (Do Not Delete)" --notes "Permanent prebuilt NekoBox libcore.aar for fast CI builds"
+            fi
+          fi
 
       - name: Install Gradle 8.10.2
         run: |
@@ -57,7 +74,9 @@ jobs:
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
-          path: ~/.gradle/caches
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
@@ -87,13 +106,13 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle assembleFullRelease assembleLiteRelease --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --build-cache --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: app/build/outputs/apk/*/release/*.apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
       - name: Publish to Releases
@@ -103,7 +122,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           NAME="${GH_REPO##*/}"
-          cp app/build/outputs/apk/full/release/*.apk "$NAME.apk"
-          cp app/build/outputs/apk/lite/release/*.apk "$NAME-Lite.apk"
+          cp app/build/outputs/apk/release/*.apk "$NAME.apk"
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest "$NAME.apk" "$NAME-Lite.apk" --title "$NAME - latest build (Full & Lite)" --notes "Automatic build of commit ${{ github.sha }}" --target "${{ github.sha }}"
+          gh release create latest "$NAME.apk" --title "$NAME - latest build" --notes "Automatic build of commit ${{ github.sha }}" --target "${{ github.sha }}"

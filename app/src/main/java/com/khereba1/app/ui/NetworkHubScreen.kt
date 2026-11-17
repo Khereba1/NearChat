@@ -77,7 +77,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.khereba1.app.PREFS
 import com.khereba1.app.R
+import com.khereba1.app.network.HotspotAutoVpnManager
 import com.khereba1.app.network.NearChatVpnService
+import com.khereba1.app.network.StreamerKeepAlive
 import com.khereba1.app.network.QrGenerator
 import com.khereba1.app.network.RootHelper
 import com.khereba1.app.network.RootStatus
@@ -124,6 +126,12 @@ fun NetworkHubScreen(
     }
     var allowLanBind by remember {
         mutableStateOf(prefs.getBoolean("xray_allow_lan", false))
+    }
+    var autoVpnOnHotspot by remember {
+        mutableStateOf(prefs.getBoolean("auto_vpn_on_hotspot", false))
+    }
+    var streamerWakeLock by remember {
+        mutableStateOf(prefs.getBoolean("streamer_wakelock", false))
     }
     var profileName by remember { mutableStateOf("") }
     var profiles by remember { mutableStateOf(XrayTunnelManager.loadProfiles(context)) }
@@ -533,6 +541,44 @@ fun NetworkHubScreen(
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text(stringResource(R.string.vpn_client_section), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text(stringResource(R.string.vpn_manual_hint), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Auto-Connect on Host Wi-Fi (اتصال وفصل تلقائي)",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                text = "يشغل الـ VPN تلقائياً أول ما تلقط شبكة التابلت/جهاز البث ويفصله تلقائياً لما تقفل الشبكة (بدون GPS)",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Switch(
+                                            checked = autoVpnOnHotspot,
+                                            onCheckedChange = { enabled ->
+                                                autoVpnOnHotspot = enabled
+                                                prefs.edit().putBoolean("auto_vpn_on_hotspot", enabled).apply()
+                                                if (enabled) {
+                                                    val prep = VpnService.prepare(context)
+                                                    if (prep != null) {
+                                                        vpnPermLauncher.launch(prep)
+                                                    } else {
+                                                        HotspotAutoVpnManager.triggerCheckNow(context)
+                                                    }
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
                                 if (!isVpnRunning) {
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(
@@ -804,6 +850,31 @@ fun NetworkHubScreen(
                                         onCheckedChange = {
                                             allowLanBind = it
                                             prefs.edit().putBoolean("xray_allow_lan", it).apply()
+                                        }
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Streamer Keep-Alive (وضع جهاز البث المستمر)",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "يمنع نوم المعالج أو ضعف الواي فاي والهوتسبوت عند إغلاق شاشة التابلت أو الجهاز القديم",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = streamerWakeLock,
+                                        onCheckedChange = { enabled ->
+                                            streamerWakeLock = enabled
+                                            prefs.edit().putBoolean("streamer_wakelock", enabled).apply()
+                                            StreamerKeepAlive.setEnabled(context, enabled)
                                         }
                                     )
                                 }

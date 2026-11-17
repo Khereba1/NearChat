@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.os.Build
 import android.util.Log
+import com.khereba1.app.network.HotspotAutoVpnManager
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -12,11 +13,12 @@ import java.util.Locale
 
 const val PREFS = "app_prefs"
 
-/** App entry point: starts the in-app error log. */
+/** App entry point: starts the in-app error log and Wi-Fi Hotspot Auto-VPN watcher. */
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
         AppLog.init(this)
+        HotspotAutoVpnManager.init(this)
     }
 }
 

@@ -13,21 +13,10 @@ android {
         applicationId = "com.khereba1.nearchat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 38
-        versionName = "2.2.0"
+        versionCode = 39
+        versionName = "2.3.0"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
-    }
-
-    flavorDimensions += "variant"
-    productFlavors {
-        create("full") {
-            dimension = "variant"
-        }
-        create("lite") {
-            dimension = "variant"
-            versionNameSuffix = "-lite"
         }
     }
 
@@ -78,7 +67,7 @@ android {
 
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
-    "fullImplementation"(fileTree(mapOf("dir" to "libs-full", "include" to listOf("*.aar"))))
+    implementation(fileTree(mapOf("dir" to "libs-full", "include" to listOf("*.aar"))))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")

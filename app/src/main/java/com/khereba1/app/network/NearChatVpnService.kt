@@ -23,6 +23,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiManager
+import android.os.PowerManager
+import com.khereba1.app.PREFS
+import kotlinx.coroutines.delay
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+
 
 class NearChatVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
@@ -372,6 +383,179 @@ class NearChatVpnService : VpnService() {
                     )
                 )
             }
+        }
+    }
+}
+
+
+/**
+ * Watches Wi-Fi connections and automatically starts/stops Client VPN when connected to a
+ * NearChat Host Hotspot or LAN proxy (e.g., streaming tablet/phone without root).
+ * Works without GPS/Location permission by probing the DHCP gateway IP on the Wi-Fi transport.
+ */
+object HotspotAutoVpnManager {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var initialized = false
+    private var activeWifiNetwork: Network? = null
+    private var autoTriggeredSession = false
+    private var probeJob: Job? = null
+
+    fun init(context: Context) {
+        if (initialized) return
+        initialized = true
+        val appContext = context.applicationContext
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+
+        val req = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+
+        runCatching {
+            cm.registerNetworkCallback(req, object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    activeWifiNetwork = network
+                    scheduleProbe(appContext, network, cm.getLinkProperties(network))
+                }
+
+                override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                    activeWifiNetwork = network
+                    scheduleProbe(appContext, network, linkProperties)
+                }
+
+                override fun onLost(network: Network) {
+                    if (activeWifiNetwork == network) {
+                        activeWifiNetwork = null
+                    }
+                    probeJob?.cancel()
+                    val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    val autoEnabled = prefs.getBoolean("auto_vpn_on_hotspot", false)
+                    if (autoEnabled && NearChatVpnService.isRunning.value && !XrayTunnelManager.state.value.isRunning) {
+                        AppLog.log("AutoVPN", "Host Wi-Fi disconnected -> auto-stopping Client VPN")
+                        autoTriggeredSession = false
+                        NearChatVpnService.stop(appContext)
+                    }
+                }
+            })
+        }
+    }
+
+    fun triggerCheckNow(context: Context) {
+        val appContext = context.applicationContext
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val net = activeWifiNetwork ?: return
+        scheduleProbe(appContext, net, cm.getLinkProperties(net))
+    }
+
+    private fun scheduleProbe(appContext: Context, network: Network, lp: LinkProperties?) {
+        val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("auto_vpn_on_hotspot", false)) return
+        if (NearChatVpnService.isRunning.value || XrayTunnelManager.state.value.isRunning) return
+        if (VpnService.prepare(appContext) != null) {
+            AppLog.log("AutoVPN", "VPN permission not granted yet; grant once in app first.")
+            return
+        }
+
+        probeJob?.cancel()
+        probeJob = scope.launch {
+            val savedHost = prefs.getString("vpn_host_ip", "192.168.49.1")?.trim().orEmpty()
+            val savedPort = prefs.getString("vpn_host_port", "1080")?.trim()?.toIntOrNull() ?: 1080
+
+            val candidateHosts = linkedSetOf<String>()
+            if (savedHost.isNotEmpty() && savedHost != "127.0.0.1") candidateHosts.add(savedHost)
+            lp?.routes?.forEach { route ->
+                val gw = route.gateway
+                if (gw is Inet4Address && !gw.isLoopbackAddress) {
+                    gw.hostAddress?.let { if (it != "0.0.0.0") candidateHosts.add(it) }
+                }
+            }
+            candidateHosts.add("192.168.49.1")
+            candidateHosts.add("192.168.43.1")
+
+            val candidatePorts = linkedSetOf(savedPort, 1080, XrayTunnelManager.LOCAL_SOCKS_PORT)
+
+            // Try up to 3 quick passes (gives DHCP + Host Router a moment after Wi-Fi association)
+            for (attempt in 1..3) {
+                if (NearChatVpnService.isRunning.value || XrayTunnelManager.state.value.isRunning) return@launch
+                for (host in candidateHosts) {
+                    for (port in candidatePorts) {
+                        if (isPortOpenOnNetwork(network, host, port, 550)) {
+                            AppLog.log("AutoVPN", "Detected Host proxy at $host:$port on Wi-Fi -> auto-starting Client VPN")
+                            prefs.edit()
+                                .putString("vpn_host_ip", host)
+                                .putString("vpn_host_port", port.toString())
+                                .apply()
+                            autoTriggeredSession = true
+                            NearChatVpnService.start(appContext, host, port)
+                            return@launch
+                        }
+                    }
+                }
+                delay(1200)
+            }
+        }
+    }
+
+    private fun isPortOpenOnNetwork(network: Network, host: String, port: Int, timeoutMs: Int): Boolean {
+        return try {
+            network.socketFactory.createSocket().use { sock ->
+                sock.connect(InetSocketAddress(host, port), timeoutMs)
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+}
+
+/**
+ * Keeps CPU and Wi-Fi radio at high performance on old streaming/host devices when screen turns off.
+ */
+object StreamerKeepAlive {
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    @Synchronized
+    fun setEnabled(context: Context, enabled: Boolean) {
+        val appContext = context.applicationContext
+        if (enabled) {
+            try {
+                if (wakeLock == null) {
+                    val pm = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NearChat::StreamerWakeLock").apply {
+                        setReferenceCounted(false)
+                    }
+                }
+                if (wakeLock?.isHeld == false) {
+                    wakeLock?.acquire()
+                }
+                if (wifiLock == null) {
+                    val wm = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                    @Suppress("DEPRECATION")
+                    val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    } else {
+                        WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                    }
+                    wifiLock = wm.createWifiLock(mode, "NearChat::StreamerWifiLock").apply {
+                        setReferenceCounted(false)
+                    }
+                }
+                if (wifiLock?.isHeld == false) {
+                    wifiLock?.acquire()
+                }
+                AppLog.log("StreamerMode", "WakeLock + WifiLock acquired for uninterrupted Hotspot/Proxy streaming")
+            } catch (e: Throwable) {
+                AppLog.log("StreamerMode", "Failed to acquire locks", e)
+            }
+        } else {
+            try {
+                if (wakeLock?.isHeld == true) wakeLock?.release()
+            } catch (_: Throwable) {}
+            try {
+                if (wifiLock?.isHeld == true) wifiLock?.release()
+            } catch (_: Throwable) {}
+            AppLog.log("StreamerMode", "WakeLock + WifiLock released")
         }
     }
 }
