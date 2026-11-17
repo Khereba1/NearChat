@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -13,12 +14,21 @@ import com.khereba1.app.AppLog
 import com.khereba1.app.MainActivity
 import com.khereba1.app.R
 import hev.htproxy.TProxyService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 
 class NearChatVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
+    private var netCallback: ConnectivityManager.NetworkCallback? = null
+    private var watchJob: Job? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     companion object {
         private const val CHANNEL_ID = "nearchat_vpn_channel"
@@ -27,8 +37,20 @@ class NearChatVpnService : VpnService() {
         const val EXTRA_SOCKS_PORT = "socks_port"
         const val ACTION_STOP = "com.khereba1.nearchat.STOP_VPN"
 
+        @Volatile
+        private var instance: NearChatVpnService? = null
+
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning
+
+        /** Lets the tunnel core keep its own outbound sockets outside the VPN (no routing loop). */
+        fun protectFd(fd: Int): Boolean {
+            return try {
+                instance?.protect(fd) ?: false
+            } catch (_: Throwable) {
+                false
+            }
+        }
 
         fun start(context: Context, hostIp: String, socksPort: Int = 1080) {
             val intent = Intent(context, NearChatVpnService::class.java).apply {
@@ -48,15 +70,27 @@ class NearChatVpnService : VpnService() {
         }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
+        if (intent == null) {
+            // The system re-created us after the process died. Never resume a stale tunnel:
+            // the SOCKS target (sing-box or the router host) is gone and an empty VPN cuts the internet.
+            stopTunnel()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent.action == ACTION_STOP) {
             stopTunnel()
             stopSelf()
             return START_NOT_STICKY
         }
 
-        val hostIp = intent?.getStringExtra(EXTRA_HOST_IP)?.trim()?.ifEmpty { "192.168.49.1" } ?: "192.168.49.1"
-        val socksPort = (intent?.getIntExtra(EXTRA_SOCKS_PORT, 1080) ?: 1080).coerceIn(1, 65535)
+        val hostIp = intent.getStringExtra(EXTRA_HOST_IP)?.trim()?.ifEmpty { "192.168.49.1" } ?: "192.168.49.1"
+        val socksPort = intent.getIntExtra(EXTRA_SOCKS_PORT, 1080).coerceIn(1, 65535)
 
         ensureChannel()
         val openIntent = PendingIntent.getActivity(
@@ -82,13 +116,37 @@ class NearChatVpnService : VpnService() {
         startForeground(NOTIF_ID, notif)
 
         startTunnel(hostIp, socksPort)
-        return START_STICKY
+        watchLocalTunnel(hostIp, socksPort)
+        return START_NOT_STICKY
+    }
+
+    /**
+     * If the VPN points at the built-in sing-box tunnel, tie the VPN's life to the tunnel's life.
+     * Without this, stopping or crashing the core leaves every app routed into a dead port.
+     */
+    private fun watchLocalTunnel(hostIp: String, socksPort: Int) {
+        watchJob?.cancel()
+        watchJob = null
+        if (hostIp != "127.0.0.1" || socksPort != XrayTunnelManager.LOCAL_SOCKS_PORT) return
+        if (!_isRunning.value) return
+        watchJob = scope.launch {
+            var seenRunning = false
+            XrayTunnelManager.state.collect { st ->
+                if (st.isRunning) {
+                    seenRunning = true
+                } else if (seenRunning) {
+                    AppLog.log("VPN", "Local tunnel stopped -> stopping VPN")
+                    stopTunnel()
+                    stopSelf()
+                }
+            }
+        }
     }
 
     private fun startTunnel(hostIp: String, socksPort: Int) {
         stopTunnel()
         try {
-            val pfd = Builder()
+            val builder = Builder()
                 .setSession("NearChat VPN")
                 .setMtu(1500)
                 .addAddress("10.10.10.2", 24)
@@ -96,7 +154,16 @@ class NearChatVpnService : VpnService() {
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1")
                 .addDisallowedApplication(packageName)
-                .establish()
+
+            val phys = PhysicalNetwork.current(this)
+            if (phys != null) {
+                try {
+                    builder.setUnderlyingNetworks(arrayOf(phys.network))
+                } catch (_: Throwable) {
+                }
+            }
+
+            val pfd = builder.establish()
 
             if (pfd == null) {
                 AppLog.log("VPN", "VpnService.Builder.establish() returned null")
@@ -111,6 +178,7 @@ class NearChatVpnService : VpnService() {
                 """
                 tunnel:
                   mtu: 1500
+                  ipv4: 10.10.10.1
                 socks5:
                   port: $socksPort
                   address: $hostIp
@@ -124,7 +192,10 @@ class NearChatVpnService : VpnService() {
             if (!ok) {
                 stopTunnel()
                 stopSelf()
+                return
             }
+
+            netCallback = PhysicalNetwork.watch(this) { refreshUnderlyingNetwork() }
         } catch (e: Throwable) {
             AppLog.log("VPN", "Failed to start VPN tunnel", e)
             stopTunnel()
@@ -132,7 +203,18 @@ class NearChatVpnService : VpnService() {
         }
     }
 
+    private fun refreshUnderlyingNetwork() {
+        if (tunFd == null) return
+        val phys = PhysicalNetwork.current(this) ?: return
+        try {
+            setUnderlyingNetworks(arrayOf(phys.network))
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun stopTunnel() {
+        PhysicalNetwork.unwatch(this, netCallback)
+        netCallback = null
         try {
             if (TProxyService.TProxyIsRunning()) {
                 TProxyService.TProxyStopService()
@@ -147,8 +229,16 @@ class NearChatVpnService : VpnService() {
         _isRunning.value = false
     }
 
-    override fun onDestroy() {
+    override fun onRevoke() {
         stopTunnel()
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        watchJob?.cancel()
+        scope.cancel()
+        stopTunnel()
+        if (instance === this) instance = null
         super.onDestroy()
     }
 

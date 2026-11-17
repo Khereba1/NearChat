@@ -60,6 +60,12 @@ object XrayTunnelManager {
     private var commandServer: CommandServer? = null
     private var envInitialized = false
     @Volatile private var lastCoreError: String = ""
+    @Volatile private var appCtx: Context? = null
+    @Volatile private var defaultListener: InterfaceUpdateListener? = null
+    @Volatile private var activeConfig: String? = null
+    @Volatile private var lastIface: String? = null
+    @Volatile private var generation: Int = 0
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private val _state = MutableStateFlow(XrayState())
     val state: StateFlow<XrayState> = _state
 
@@ -73,14 +79,21 @@ object XrayTunnelManager {
         override fun next(): String = items[idx++]
     }
 
+    private fun isIgnoredInterface(name: String): Boolean {
+        val n = name.lowercase()
+        return n.startsWith("tun") || n.startsWith("ppp") || n.startsWith("dummy") ||
+            n.startsWith("ifb") || n.startsWith("sit") || n.startsWith("ip6tnl")
+    }
+
     private fun collectBoxInterfaces(): List<io.nekohasekai.libbox.NetworkInterface> {
         val list = mutableListOf<io.nekohasekai.libbox.NetworkInterface>()
+        val preferred = appCtx?.let { PhysicalNetwork.current(it)?.interfaceName }
         runCatching {
             val en = java.net.NetworkInterface.getNetworkInterfaces() ?: return emptyList()
             while (en.hasMoreElements()) {
                 val ni = en.nextElement()
                 val name = ni.name ?: continue
-                if (!ni.isUp || ni.isLoopback || name.startsWith("tun") || name.startsWith("ppp")) continue
+                if (!ni.isUp || ni.isLoopback || isIgnoredInterface(name)) continue
                 val addrs = ni.interfaceAddresses.mapNotNull { ia ->
                     val a = ia.address ?: return@mapNotNull null
                     val rawHost = a.hostAddress ?: return@mapNotNull null
@@ -99,13 +112,43 @@ object XrayTunnelManager {
                 list.add(boxNi)
             }
         }
+        // Put the real default network first so "first interface" is never dummy0 / a stale one.
+        if (preferred != null) {
+            val head = list.filter { it.name == preferred }
+            if (head.isNotEmpty()) {
+                val tail = list.filter { it.name != preferred }
+                list.clear()
+                list.addAll(head)
+                list.addAll(tail)
+            }
+        }
         return list
+    }
+
+    private fun pushDefaultInterface(listener: InterfaceUpdateListener) {
+        val phys = appCtx?.let { PhysicalNetwork.current(it) }
+        if (phys != null) {
+            val idx = runCatching { java.net.NetworkInterface.getByName(phys.interfaceName)?.index }
+                .getOrNull() ?: 0
+            lastIface = phys.interfaceName
+            runCatching { listener.updateDefaultInterface(phys.interfaceName, idx, false, false) }
+            return
+        }
+        val first = collectBoxInterfaces().firstOrNull()
+        if (first != null) {
+            runCatching { listener.updateDefaultInterface(first.name, first.index, false, false) }
+        } else {
+            runCatching { listener.updateDefaultInterface("wlan0", 1, false, false) }
+        }
     }
 
     private val platformImpl = object : PlatformInterface {
         override fun localDNSTransport(): LocalDNSTransport? = null
-        override fun usePlatformAutoDetectInterfaceControl(): Boolean = false
-        override fun autoDetectInterfaceControl(fd: Int) {}
+        override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
+        override fun autoDetectInterfaceControl(fd: Int) {
+            // Keep the core's own outbound sockets outside the VPN (no routing loop).
+            NearChatVpnService.protectFd(fd)
+        }
         override fun openTun(options: TunOptions?): Int = -1
         override fun useProcFS(): Boolean = false
         override fun findConnectionOwner(
@@ -117,14 +160,12 @@ object XrayTunnelManager {
         ): ConnectionOwner = ConnectionOwner()
         override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
             if (listener == null) return
-            val first = collectBoxInterfaces().firstOrNull()
-            if (first != null) {
-                runCatching { listener.updateDefaultInterface(first.name, first.index, false, false) }
-            } else {
-                runCatching { listener.updateDefaultInterface("wlan0", 1, false, false) }
-            }
+            defaultListener = listener
+            pushDefaultInterface(listener)
         }
-        override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+        override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
+            defaultListener = null
+        }
         override fun getInterfaces(): NetworkInterfaceIterator {
             val items = collectBoxInterfaces()
             var idx = 0
@@ -158,6 +199,7 @@ object XrayTunnelManager {
     }
 
     private fun ensureSetup(context: Context) {
+        appCtx = context.applicationContext
         if (envInitialized) return
         val baseDir = File(context.filesDir, "singbox").apply { mkdirs() }
         val workDir = File(baseDir, "work").apply { mkdirs() }
@@ -315,17 +357,51 @@ object XrayTunnelManager {
         }
 
         _state.value = XrayState(false, "Starting sing-box…")
+        val myGen = generation
         Thread {
             try {
                 lastCoreError = ""
                 val cs = getOrCreateServer(context)
-                val configJson = buildConfigJson(trimmed, overrides, listenPort = LOCAL_SOCKS_PORT)
-                Libbox.checkConfig(configJson)
-                cs.startOrReloadService(configJson, OverrideOptions())
-                if (waitForPort(LOCAL_SOCKS_PORT, 3500L)) {
+                val baseJson = buildConfigJson(trimmed, overrides, listenPort = LOCAL_SOCKS_PORT)
+                // Preferred config: DNS hijack + auto-detect interface. If this libbox rejects it,
+                // fall back to the plain inbound/outbound config so Start never gets worse than before.
+                val enhancedJson: String? = runCatching {
+                    enhanceConfig(baseJson).also { Libbox.checkConfig(it) }
+                }.onFailure {
+                    AppLog.log("SINGBOX", "Enhanced config rejected, using basic: ${it.message}")
+                }.getOrNull()
+                var activeJson: String = enhancedJson ?: baseJson.also { Libbox.checkConfig(it) }
+                cs.startOrReloadService(activeJson, OverrideOptions())
+                var up = waitForPort(LOCAL_SOCKS_PORT, 3500L)
+                if (!up && enhancedJson != null) {
+                    AppLog.log("SINGBOX", "Core failed with enhanced config (${lastCoreError}); retrying basic")
+                    runCatching { cs.closeService() }
+                    lastCoreError = ""
+                    activeJson = baseJson
+                    Libbox.checkConfig(activeJson)
+                    cs.startOrReloadService(activeJson, OverrideOptions())
+                    up = waitForPort(LOCAL_SOCKS_PORT, 3500L)
+                }
+                if (myGen != generation) return@Thread
+                if (up) {
                     val bindHost = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
-                    _state.value = XrayState(true, "sing-box active ($bindHost:$LOCAL_SOCKS_PORT)")
-                    onReady?.invoke()
+                    activeConfig = activeJson
+                    lastIface = appCtx?.let { PhysicalNetwork.current(it)?.interfaceName }
+                    startNetworkWatch()
+                    _state.value = XrayState(true, "sing-box active ($bindHost:$LOCAL_SOCKS_PORT), checking server…")
+                    val reachable = probeServer(myGen)
+                    if (myGen == generation) {
+                        if (reachable) {
+                            _state.value = XrayState(true, "sing-box active ($bindHost:$LOCAL_SOCKS_PORT), server OK")
+                            onReady?.invoke()
+                        } else {
+                            _state.value = XrayState(
+                                true,
+                                "Tunnel is up but the server is NOT reachable, so the VPN was not started. " +
+                                    "Check the config/server, then Stop and Start again."
+                            )
+                        }
+                    }
                 } else {
                     val msg = lastCoreError.ifBlank { "Port $LOCAL_SOCKS_PORT failed to bind" }
                     _state.value = XrayState(false, "Core error: $msg")
@@ -339,11 +415,118 @@ object XrayTunnelManager {
     }
 
     fun stop() {
+        generation++
+        stopNetworkWatch()
+        activeConfig = null
         try {
             commandServer?.closeService()
         } catch (_: Throwable) {
         }
         _state.value = XrayState(false, "")
+    }
+
+    /** True only if a real request succeeds THROUGH the proxy (the local port being open proves nothing). */
+    private fun probeServer(gen: Int): Boolean {
+        val urls = listOf(
+            "https://www.gstatic.com/generate_204",
+            "https://cp.cloudflare.com/generate_204",
+            "http://connectivitycheck.gstatic.com/generate_204"
+        )
+        for (attempt in 0 until 2) {
+            for (u in urls) {
+                if (gen != generation) return false
+                val ok = runCatching {
+                    val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", LOCAL_SOCKS_PORT))
+                    val conn = (URL(u).openConnection(proxy) as HttpURLConnection).apply {
+                        connectTimeout = 5000
+                        readTimeout = 5000
+                        instanceFollowRedirects = false
+                    }
+                    try {
+                        conn.responseCode in 200..399
+                    } finally {
+                        conn.disconnect()
+                    }
+                }.getOrDefault(false)
+                if (ok) return true
+            }
+            Thread.sleep(800)
+        }
+        return false
+    }
+
+    private fun startNetworkWatch() {
+        val ctx = appCtx ?: return
+        stopNetworkWatch()
+        netCallback = PhysicalNetwork.watch(ctx) { onPhysicalNetworkChanged() }
+    }
+
+    private fun stopNetworkWatch() {
+        val ctx = appCtx ?: return
+        PhysicalNetwork.unwatch(ctx, netCallback)
+        netCallback = null
+    }
+
+    /** Wi-Fi <-> mobile data switch: tell the core the new default interface and reload so stale sockets die. */
+    private fun onPhysicalNetworkChanged() {
+        val ctx = appCtx ?: return
+        if (!_state.value.isRunning) return
+        val phys = PhysicalNetwork.current(ctx) ?: return
+        if (phys.interfaceName == lastIface) return
+        val cfg = activeConfig ?: return
+        AppLog.log("SINGBOX", "Network changed ${lastIface} -> ${phys.interfaceName}, reloading core")
+        lastIface = phys.interfaceName
+        defaultListener?.let { pushDefaultInterface(it) }
+        Thread {
+            try {
+                commandServer?.startOrReloadService(cfg, OverrideOptions())
+            } catch (e: Throwable) {
+                AppLog.log("SINGBOX", "Reload after network change failed", e)
+            }
+        }.start()
+    }
+
+    /**
+     * Adds what a VPN-fed core needs: DNS answered inside the core over the proxy (DoH, works even if the
+     * server has no UDP) and auto-detected outbound interface. Only touches configs without their own route/dns.
+     */
+    private fun enhanceConfig(json: String): String {
+        val root = JSONObject(json)
+        val tag = root.optJSONArray("outbounds")?.optJSONObject(0)?.optString("tag", "").orEmpty()
+        val hasDns = root.has("dns")
+        if (!hasDns && tag.isNotBlank()) {
+            root.put(
+                "dns",
+                JSONObject()
+                    .put(
+                        "servers",
+                        JSONArray().put(
+                            JSONObject()
+                                .put("tag", "dns-remote")
+                                .put("address", "https://1.1.1.1/dns-query")
+                                .put("detour", tag)
+                        )
+                    )
+                    .put("final", "dns-remote")
+                    .put("strategy", "ipv4_only")
+            )
+        }
+        if (!root.has("route")) {
+            val route = JSONObject().put("auto_detect_interface", true)
+            if (tag.isNotBlank()) route.put("final", tag)
+            if (!hasDns && tag.isNotBlank()) {
+                route.put(
+                    "rules",
+                    JSONArray().put(
+                        JSONObject()
+                            .put("port", JSONArray().put(53))
+                            .put("action", "hijack-dns")
+                    )
+                )
+            }
+            root.put("route", route)
+        }
+        return root.toString()
     }
 
     private fun buildConfigJson(
@@ -702,7 +885,7 @@ object XrayTunnelManager {
         val host = uri.host ?: error("Missing host")
         val port = if (uri.port > 0) uri.port else 1080
         return JSONObject()
-            .put("type", "mixed")
+            .put("type", "socks")
             .put("tag", "proxy")
             .put("server", resolveHostIfPossible(host))
             .put("server_port", port)

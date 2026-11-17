@@ -24,6 +24,9 @@ You cannot compile: be careful and conservative. A mistake shows up only as a fa
 - `media/VoiceRecorder.kt`: AAC `.m4a` voice note recorder (`MediaRecorder`).
 - `media/AudioPlayerManager.kt`: Inline voice note player (`MediaPlayer`) with live progress & seek.
 - `network/NetworkUtils.kt`: Local Wi-Fi/Hotspot IPv4 address lookup.
+- `network/PhysicalNetwork.kt`: finds the real (non-VPN) default network via ConnectivityManager and watches it (debounced).
+- `network/NearChatVpnService.kt`: VpnService + hev-socks5-tunnel (tun2socks) to a SOCKS host. Not sticky; protect(fd) for the core; stops itself when the built-in tunnel (127.0.0.1:10808) stops.
+- `full/.../XrayTunnelManager.kt` (flavor `full`; `lite` has a stub): sing-box core via libbox. Probes the server before auto-starting the VPN, reloads on Wi-Fi/mobile switch, DNS hijack + auto_detect_interface config with fallback to the basic config.
 - `network/QrGenerator.kt`: QR code bitmap generator (`com.google.zxing:core:3.5.3`).
 - `network/BluetoothChatManager.kt`: Bluetooth Classic RFCOMM server/client for offline chat without Wi-Fi.
 - `network/LanHttpServer.kt`: Embedded HTTP/1.1 server (JSON API, Range media streaming, embedded HTML5 Web UI).
