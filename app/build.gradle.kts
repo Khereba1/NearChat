@@ -13,8 +13,8 @@ android {
         applicationId = "com.khereba1.nearchat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 25
-        versionName = "1.9.0"
+        versionCode = 26
+        versionName = "1.9.1"
     }
 
     signingConfigs {

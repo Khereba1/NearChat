@@ -46,7 +46,7 @@ jobs:
         run: |
           mkdir -p app/libs
           gh release download 2.20.0 -R heiher/hev-socks5-tunnel -p "*.aar" -D app/libs
-          gh release download v26.11.9 -R 2dust/AndroidLibXrayLite -p "libv2ray.aar" -D app/libs
+          rm -f app/libs/libv2ray.aar
           ls -la app/libs
 
       - name: Prepare signing key
