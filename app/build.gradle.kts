@@ -13,8 +13,22 @@ android {
         applicationId = "com.khereba1.nearchat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 27
-        versionName = "1.9.2"
+        versionCode = 28
+        versionName = "2.0.0"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    flavorDimensions += "variant"
+    productFlavors {
+        create("full") {
+            dimension = "variant"
+        }
+        create("lite") {
+            dimension = "variant"
+            versionNameSuffix = "-lite"
+        }
     }
 
     signingConfigs {
@@ -74,5 +88,5 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("com.google.zxing:core:3.5.3")
-    implementation("net.clever-vpn:libbox-android:2.1.3")
+    "fullImplementation"("net.clever-vpn:libbox-android:2.1.3")
 }

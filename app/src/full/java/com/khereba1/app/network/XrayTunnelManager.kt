@@ -76,14 +76,21 @@ object XrayTunnelManager {
             sourcePort: Int,
             destinationAddress: String?,
             destinationPort: Int
-        ): ConnectionOwner? = null
+        ): ConnectionOwner = ConnectionOwner()
         override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
         override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
-        override fun getInterfaces(): NetworkInterfaceIterator? = null
+        override fun getInterfaces(): NetworkInterfaceIterator = object : NetworkInterfaceIterator {
+            override fun hasNext(): Boolean = false
+            override fun next(): io.nekohasekai.libbox.NetworkInterface? = null
+        }
         override fun underNetworkExtension(): Boolean = false
         override fun includeAllNetworks(): Boolean = false
-        override fun readWIFIState(): WIFIState? = null
-        override fun systemCertificates(): StringIterator? = null
+        override fun readWIFIState(): WIFIState = Libbox.newWIFIState("", "")
+        override fun systemCertificates(): StringIterator = object : StringIterator {
+            override fun len(): Int = 0
+            override fun hasNext(): Boolean = false
+            override fun next(): String = ""
+        }
         override fun clearDNSCache() {}
         override fun sendNotification(notification: Notification?) {}
     }
@@ -180,26 +187,33 @@ object XrayTunnelManager {
             .edit().putString(PREF_PROFILES, arr.toString()).apply()
     }
 
+    @Synchronized
+    private fun getOrCreateServer(context: Context): CommandServer {
+        ensureSetup(context)
+        val existing = commandServer
+        if (existing != null) return existing
+        return Libbox.newCommandServer(commandHandler, platformImpl).apply {
+            start()
+            commandServer = this
+        }
+    }
+
     suspend fun testPing(
         context: Context,
         rawInput: String,
         overrides: XrayOverrides = XrayOverrides()
     ): Result<Long> = withContext(Dispatchers.IO) {
         runCatching {
-            ensureSetup(context)
-            var tempServer: CommandServer? = null
-            val testPort = if (_state.value.isRunning) LOCAL_SOCKS_PORT else 10809
-            if (!_state.value.isRunning) {
-                val cfg = buildConfigJson(rawInput.trim(), overrides, listenPort = testPort)
-                tempServer = Libbox.newCommandServer(commandHandler, platformImpl).apply {
-                    start()
-                    startOrReloadService(cfg, OverrideOptions())
-                }
-                Thread.sleep(350)
+            val wasRunning = _state.value.isRunning
+            val cs = getOrCreateServer(context)
+            if (!wasRunning) {
+                val cfg = buildConfigJson(rawInput.trim(), overrides, listenPort = LOCAL_SOCKS_PORT)
+                cs.startOrReloadService(cfg, OverrideOptions())
+                Thread.sleep(400)
             }
             try {
                 val t0 = System.currentTimeMillis()
-                val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", testPort))
+                val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", LOCAL_SOCKS_PORT))
                 val conn = (URL("https://www.gstatic.com/generate_204").openConnection(proxy) as HttpURLConnection).apply {
                     connectTimeout = 6000
                     readTimeout = 6000
@@ -210,8 +224,9 @@ object XrayTunnelManager {
                 if (code !in 200..399) error("HTTP $code")
                 System.currentTimeMillis() - t0
             } finally {
-                runCatching { tempServer?.closeService() }
-                runCatching { tempServer?.close() }
+                if (!wasRunning) {
+                    runCatching { cs.closeService() }
+                }
             }
         }
     }
@@ -231,12 +246,9 @@ object XrayTunnelManager {
         _state.value = XrayState(false, "Starting sing-box…")
         Thread {
             try {
-                ensureSetup(context)
+                val cs = getOrCreateServer(context)
                 val configJson = buildConfigJson(trimmed, overrides, listenPort = LOCAL_SOCKS_PORT)
-                val cs = Libbox.newCommandServer(commandHandler, platformImpl)
-                cs.start()
                 cs.startOrReloadService(configJson, OverrideOptions())
-                commandServer = cs
                 _state.value = XrayState(true, "sing-box running on 127.0.0.1:$LOCAL_SOCKS_PORT")
             } catch (e: Throwable) {
                 AppLog.log("SINGBOX", "Start failed", e)
@@ -251,11 +263,6 @@ object XrayTunnelManager {
             commandServer?.closeService()
         } catch (_: Throwable) {
         }
-        try {
-            commandServer?.close()
-        } catch (_: Throwable) {
-        }
-        commandServer = null
         _state.value = XrayState(false, "")
     }
 
