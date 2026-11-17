@@ -8,6 +8,7 @@ import com.khereba1.app.data.LanPermission
 import com.khereba1.app.data.NearChatDb
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -81,9 +82,12 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
     private fun handleClient(socket: Socket) {
         socket.use { sock ->
             try {
-                sock.soTimeout = 30_000
+                sock.soTimeout = 60_000
+                sock.tcpNoDelay = true
+                runCatching { sock.sendBufferSize = 262_144 }
+                runCatching { sock.receiveBufferSize = 262_144 }
                 val input = sock.getInputStream()
-                val output = sock.getOutputStream()
+                val output = BufferedOutputStream(sock.getOutputStream(), 262_144)
 
                 val requestLine = readLineAscii(input) ?: return
                 val parts = requestLine.split(" ")
@@ -304,7 +308,7 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
                 out.write(hdr.toByteArray(StandardCharsets.UTF_8))
                 RandomAccessFile(file, "r").use { raf ->
                     raf.seek(start)
-                    val buf = ByteArray(16384)
+                    val buf = ByteArray(262_144)
                     var remaining = len
                     while (remaining > 0) {
                         val read = raf.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
@@ -324,7 +328,7 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
             "Content-Length: $total\r\n" +
             "Connection: close\r\n\r\n"
         out.write(hdr.toByteArray(StandardCharsets.UTF_8))
-        file.inputStream().use { it.copyTo(out) }
+        file.inputStream().use { it.copyTo(out, 262_144) }
         out.flush()
     }
 

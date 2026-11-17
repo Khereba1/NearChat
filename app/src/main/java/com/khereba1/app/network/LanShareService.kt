@@ -6,6 +6,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
+import android.os.PowerManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -23,6 +25,8 @@ data class LanServerState(
 
 class LanShareService : Service() {
     private var server: LanHttpServer? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     companion object {
         private const val CHANNEL_ID = "nearchat_lan_channel"
@@ -57,6 +61,7 @@ class LanShareService : Service() {
         if (server == null) {
             val s = LanHttpServer(this)
             if (s.start()) {
+                acquireLocks()
                 server = s
                 val ip = NetworkUtils.getLocalIpAddress() ?: "127.0.0.1"
                 val url = "http://$ip:${s.port}"
@@ -93,10 +98,38 @@ class LanShareService : Service() {
     }
 
     override fun onDestroy() {
+        releaseLocks()
         server?.stop()
         server = null
         _state.value = LanServerState(isRunning = false)
         super.onDestroy()
+    }
+
+
+    @Suppress("DEPRECATION")
+    private fun acquireLocks() {
+        try {
+            if (wakeLock == null) {
+                val pm = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NearChat:LanWake").apply {
+                    acquire(60 * 60 * 1000L)
+                }
+            }
+            if (wifiLock == null) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "NearChat:LanWifi").apply {
+                    acquire()
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun releaseLocks() {
+        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Throwable) {}
+        wakeLock = null
+        try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Throwable) {}
+        wifiLock = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
