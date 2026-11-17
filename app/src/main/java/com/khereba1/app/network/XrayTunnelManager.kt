@@ -4,7 +4,11 @@ import android.content.Context
 import android.util.Base64
 import com.khereba1.app.AppLog
 import com.khereba1.app.PREFS
-import io.nekohasekai.libbox.BoxService
+import io.nekohasekai.libbox.CommandServer
+import io.nekohasekai.libbox.CommandServerHandler
+import io.nekohasekai.libbox.ConnectionOwner
+import io.nekohasekai.libbox.OverrideOptions
+import io.nekohasekai.libbox.SystemProxyStatus
 import io.nekohasekai.libbox.InterfaceUpdateListener
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.LocalDNSTransport
@@ -52,7 +56,7 @@ data class XrayProfile(
 )
 
 object XrayTunnelManager {
-    private var boxService: BoxService? = null
+    private var commandServer: CommandServer? = null
     private var envInitialized = false
     private val _state = MutableStateFlow(XrayState())
     val state: StateFlow<XrayState> = _state
@@ -65,9 +69,6 @@ object XrayTunnelManager {
         override fun usePlatformAutoDetectInterfaceControl(): Boolean = false
         override fun autoDetectInterfaceControl(fd: Int) {}
         override fun openTun(options: TunOptions?): Int = -1
-        override fun writeLog(message: String?) {
-            if (!message.isNullOrBlank()) AppLog.log("SINGBOX", message)
-        }
         override fun useProcFS(): Boolean = false
         override fun findConnectionOwner(
             ipProtocol: Int,
@@ -75,9 +76,7 @@ object XrayTunnelManager {
             sourcePort: Int,
             destinationAddress: String?,
             destinationPort: Int
-        ): Int = -1
-        override fun packageNameByUid(uid: Int): String = ""
-        override fun uidByPackageName(packageName: String?): Int = -1
+        ): ConnectionOwner? = null
         override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
         override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
         override fun getInterfaces(): NetworkInterfaceIterator? = null
@@ -87,6 +86,19 @@ object XrayTunnelManager {
         override fun systemCertificates(): StringIterator? = null
         override fun clearDNSCache() {}
         override fun sendNotification(notification: Notification?) {}
+    }
+
+
+    private val commandHandler = object : CommandServerHandler {
+        override fun serviceStop() {
+            stop()
+        }
+        override fun serviceReload() {}
+        override fun getSystemProxyStatus(): SystemProxyStatus = SystemProxyStatus()
+        override fun setSystemProxyEnabled(enabled: Boolean) {}
+        override fun writeDebugMessage(message: String?) {
+            if (!message.isNullOrBlank()) AppLog.log("SINGBOX", message)
+        }
     }
 
     private fun ensureSetup(context: Context) {
@@ -175,12 +187,14 @@ object XrayTunnelManager {
     ): Result<Long> = withContext(Dispatchers.IO) {
         runCatching {
             ensureSetup(context)
-            var tempService: BoxService? = null
+            var tempServer: CommandServer? = null
             val testPort = if (_state.value.isRunning) LOCAL_SOCKS_PORT else 10809
             if (!_state.value.isRunning) {
                 val cfg = buildConfigJson(rawInput.trim(), overrides, listenPort = testPort)
-                tempService = Libbox.newService(cfg, platformImpl)
-                tempService.start()
+                tempServer = Libbox.newCommandServer(commandHandler, platformImpl).apply {
+                    start()
+                    startOrReloadService(cfg, OverrideOptions())
+                }
                 Thread.sleep(350)
             }
             try {
@@ -196,7 +210,8 @@ object XrayTunnelManager {
                 if (code !in 200..399) error("HTTP $code")
                 System.currentTimeMillis() - t0
             } finally {
-                runCatching { tempService?.close() }
+                runCatching { tempServer?.closeService() }
+                runCatching { tempServer?.close() }
             }
         }
     }
@@ -218,24 +233,29 @@ object XrayTunnelManager {
             try {
                 ensureSetup(context)
                 val configJson = buildConfigJson(trimmed, overrides, listenPort = LOCAL_SOCKS_PORT)
-                val svc = Libbox.newService(configJson, platformImpl)
-                svc.start()
-                boxService = svc
+                val cs = Libbox.newCommandServer(commandHandler, platformImpl)
+                cs.start()
+                cs.startOrReloadService(configJson, OverrideOptions())
+                commandServer = cs
                 _state.value = XrayState(true, "sing-box running on 127.0.0.1:$LOCAL_SOCKS_PORT")
             } catch (e: Throwable) {
                 AppLog.log("SINGBOX", "Start failed", e)
                 _state.value = XrayState(false, "Error: ${e.message}")
-                boxService = null
+                commandServer = null
             }
         }.start()
     }
 
     fun stop() {
         try {
-            boxService?.close()
+            commandServer?.closeService()
         } catch (_: Throwable) {
         }
-        boxService = null
+        try {
+            commandServer?.close()
+        } catch (_: Throwable) {
+        }
+        commandServer = null
         _state.value = XrayState(false, "")
     }
 
