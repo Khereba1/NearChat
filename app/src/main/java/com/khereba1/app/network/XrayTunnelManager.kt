@@ -4,27 +4,30 @@ import android.content.Context
 import android.util.Base64
 import com.khereba1.app.AppLog
 import com.khereba1.app.PREFS
+import io.nekohasekai.libbox.BoxService
+import io.nekohasekai.libbox.InterfaceUpdateListener
+import io.nekohasekai.libbox.Libbox
+import io.nekohasekai.libbox.LocalDNSTransport
+import io.nekohasekai.libbox.NetworkInterfaceIterator
+import io.nekohasekai.libbox.Notification
+import io.nekohasekai.libbox.PlatformInterface
+import io.nekohasekai.libbox.SetupOptions
+import io.nekohasekai.libbox.StringIterator
+import io.nekohasekai.libbox.TunOptions
+import io.nekohasekai.libbox.WIFIState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
-import libv2ray.CoreCallbackHandler
-import libv2ray.CoreController
-import libv2ray.Libv2ray
 import org.json.JSONArray
 import org.json.JSONObject
-import android.annotation.SuppressLint
+import java.io.File
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.URI
+import java.net.URL
 import java.net.URLDecoder
-import java.security.MessageDigest
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
-import javax.net.ssl.SNIHostName
-import javax.net.ssl.SSLContext
-import javax.net.ssl.SSLSocket
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -49,13 +52,57 @@ data class XrayProfile(
 )
 
 object XrayTunnelManager {
-    private var controller: CoreController? = null
+    private var boxService: BoxService? = null
     private var envInitialized = false
     private val _state = MutableStateFlow(XrayState())
     val state: StateFlow<XrayState> = _state
 
     const val LOCAL_SOCKS_PORT = 10808
     private const val PREF_PROFILES = "xray_profiles_json"
+
+    private val platformImpl = object : PlatformInterface {
+        override fun localDNSTransport(): LocalDNSTransport? = null
+        override fun usePlatformAutoDetectInterfaceControl(): Boolean = false
+        override fun autoDetectInterfaceControl(fd: Int) {}
+        override fun openTun(options: TunOptions?): Int = -1
+        override fun writeLog(message: String?) {
+            if (!message.isNullOrBlank()) AppLog.log("SINGBOX", message)
+        }
+        override fun useProcFS(): Boolean = false
+        override fun findConnectionOwner(
+            ipProtocol: Int,
+            sourceAddress: String?,
+            sourcePort: Int,
+            destinationAddress: String?,
+            destinationPort: Int
+        ): Int = -1
+        override fun packageNameByUid(uid: Int): String = ""
+        override fun uidByPackageName(packageName: String?): Int = -1
+        override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+        override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+        override fun getInterfaces(): NetworkInterfaceIterator? = null
+        override fun underNetworkExtension(): Boolean = false
+        override fun includeAllNetworks(): Boolean = false
+        override fun readWIFIState(): WIFIState? = null
+        override fun systemCertificates(): StringIterator? = null
+        override fun clearDNSCache() {}
+        override fun sendNotification(notification: Notification?) {}
+    }
+
+    private fun ensureSetup(context: Context) {
+        if (envInitialized) return
+        val baseDir = File(context.filesDir, "singbox").apply { mkdirs() }
+        val workDir = File(baseDir, "work").apply { mkdirs() }
+        val tmpDir = File(baseDir, "tmp").apply { mkdirs() }
+        val opts = SetupOptions().apply {
+            basePath = baseDir.absolutePath
+            workingPath = workDir.absolutePath
+            tempPath = tmpDir.absolutePath
+            fixAndroidStack = true
+        }
+        Libbox.setup(opts)
+        envInitialized = true
+    }
 
     fun loadProfiles(context: Context): List<XrayProfile> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -127,12 +174,30 @@ object XrayTunnelManager {
         overrides: XrayOverrides = XrayOverrides()
     ): Result<Long> = withContext(Dispatchers.IO) {
         runCatching {
-            if (!envInitialized) {
-                Libv2ray.initCoreEnv(context.filesDir.absolutePath, "")
-                envInitialized = true
+            ensureSetup(context)
+            var tempService: BoxService? = null
+            val testPort = if (_state.value.isRunning) LOCAL_SOCKS_PORT else 10809
+            if (!_state.value.isRunning) {
+                val cfg = buildConfigJson(rawInput.trim(), overrides, listenPort = testPort)
+                tempService = Libbox.newService(cfg, platformImpl)
+                tempService.start()
+                Thread.sleep(350)
             }
-            val cfg = buildConfigJson(rawInput.trim(), overrides)
-            Libv2ray.measureOutboundDelay(cfg, "https://www.gstatic.com/generate_204")
+            try {
+                val t0 = System.currentTimeMillis()
+                val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", testPort))
+                val conn = (URL("https://www.gstatic.com/generate_204").openConnection(proxy) as HttpURLConnection).apply {
+                    connectTimeout = 6000
+                    readTimeout = 6000
+                    instanceFollowRedirects = false
+                }
+                val code = conn.responseCode
+                conn.disconnect()
+                if (code !in 200..399) error("HTTP $code")
+                System.currentTimeMillis() - t0
+            } finally {
+                runCatching { tempService?.close() }
+            }
         }
     }
 
@@ -148,53 +213,40 @@ object XrayTunnelManager {
             return
         }
 
-        _state.value = XrayState(false, "Connecting…")
+        _state.value = XrayState(false, "Starting sing-box…")
         Thread {
             try {
-                val configJson = buildConfigJson(trimmed, overrides)
-                if (!envInitialized) {
-                    Libv2ray.initCoreEnv(context.filesDir.absolutePath, "")
-                    envInitialized = true
-                }
-                val ctrl = Libv2ray.newCoreController(object : CoreCallbackHandler {
-                    override fun startup(): Long = 0L
-                    override fun shutdown(): Long {
-                        _state.value = XrayState(false, "Stopped")
-                        return 0L
-                    }
-
-                    override fun onEmitStatus(p0: Long, p1: String?): Long {
-                        if (!p1.isNullOrBlank()) {
-                            _state.value = _state.value.copy(status = p1)
-                        }
-                        return 0L
-                    }
-                })
-                controller = ctrl
-                _state.value = XrayState(true, "Running on 127.0.0.1:$LOCAL_SOCKS_PORT")
-                ctrl.startLoop(configJson, 0)
+                ensureSetup(context)
+                val configJson = buildConfigJson(trimmed, overrides, listenPort = LOCAL_SOCKS_PORT)
+                val svc = Libbox.newService(configJson, platformImpl)
+                svc.start()
+                boxService = svc
+                _state.value = XrayState(true, "sing-box running on 127.0.0.1:$LOCAL_SOCKS_PORT")
             } catch (e: Throwable) {
-                AppLog.log("XRAY", "StartLoop failed", e)
+                AppLog.log("SINGBOX", "Start failed", e)
                 _state.value = XrayState(false, "Error: ${e.message}")
-                controller = null
+                boxService = null
             }
         }.start()
     }
 
     fun stop() {
         try {
-            controller?.stopLoop()
+            boxService?.close()
         } catch (_: Throwable) {
         }
-        controller = null
+        boxService = null
         _state.value = XrayState(false, "")
     }
 
-    private fun buildConfigJson(input: String, overrides: XrayOverrides): String {
+    private fun buildConfigJson(
+        input: String,
+        overrides: XrayOverrides,
+        listenPort: Int = LOCAL_SOCKS_PORT
+    ): String {
         if (input.startsWith("{")) {
             val root = JSONObject(input)
-            sanitizeJsonConfig(root, overrides)
-            return root.toString()
+            return convertOrPatchJson(root, overrides, listenPort).toString()
         }
 
         val outbound = when {
@@ -207,100 +259,145 @@ object XrayTunnelManager {
         }
 
         val inbound = JSONObject()
+            .put("type", "socks")
             .put("tag", "socks-in")
-            .put("port", LOCAL_SOCKS_PORT)
             .put("listen", "127.0.0.1")
-            .put("protocol", "socks")
-            .put("settings", JSONObject().put("auth", "noauth").put("udp", true))
+            .put("listen_port", listenPort)
 
         return JSONObject()
-            .put("log", JSONObject().put("loglevel", "warning"))
+            .put("log", JSONObject().put("level", "warn"))
             .put("inbounds", JSONArray().put(inbound))
             .put("outbounds", JSONArray().put(outbound))
             .toString()
     }
 
-
-
-    @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
-    private fun fetchServerCertSha256(host: String, port: Int, sni: String): String? {
-        if (host.isBlank() || port !in 1..65535) return null
-        return runCatching {
-            val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
-                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-            })
-            val sslCtx = SSLContext.getInstance("TLS")
-            sslCtx.init(null, trustAll, SecureRandom())
-            val sock = sslCtx.socketFactory.createSocket() as SSLSocket
-            sock.use { s ->
-                s.soTimeout = 4000
-                if (sni.isNotBlank() && !sni.all { it.isDigit() || it == '.' || it == ':' }) {
-                    val params = s.sslParameters
-                    params.serverNames = listOf(SNIHostName(sni))
-                    s.sslParameters = params
+    private fun convertOrPatchJson(
+        root: JSONObject,
+        overrides: XrayOverrides,
+        listenPort: Int
+    ): JSONObject {
+        val outbounds = root.optJSONArray("outbounds") ?: JSONArray()
+        val firstOb = outbounds.optJSONObject(0)
+        // If user pasted an Xray-format JSON ("protocol" instead of "type"), convert outbound to sing-box
+        if (firstOb != null && firstOb.has("protocol") && !firstOb.has("type")) {
+            val sbOutbounds = JSONArray()
+            for (i in 0 until outbounds.length()) {
+                val xOb = outbounds.optJSONObject(i) ?: continue
+                val proto = xOb.optString("protocol", "")
+                if (proto == "vless" || proto == "vmess" || proto == "trojan") {
+                    sbOutbounds.put(convertXrayOutboundToSingBox(xOb, overrides))
                 }
-                s.connect(InetSocketAddress(host, port), 4000)
-                s.startHandshake()
-                val cert = s.session.peerCertificates.firstOrNull() ?: return null
-                val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
-                digest.joinToString("") { "%02x".format(it) }
             }
-        }.onFailure { e ->
-            AppLog.log("XRAY", "Cert SHA-256 probe failed for $host:$port", e)
-        }.getOrNull()
-    }
+            if (sbOutbounds.length() == 0) error("No supported outbound found in JSON")
+            val inbound = JSONObject()
+                .put("type", "socks")
+                .put("tag", "socks-in")
+                .put("listen", "127.0.0.1")
+                .put("listen_port", listenPort)
+            return JSONObject()
+                .put("log", JSONObject().put("level", "warn"))
+                .put("inbounds", JSONArray().put(inbound))
+                .put("outbounds", sbOutbounds)
+        }
 
-    private fun sanitizeJsonConfig(root: JSONObject, overrides: XrayOverrides) {
-        val outbounds = root.optJSONArray("outbounds") ?: return
+        // Native sing-box JSON: update inbound port if socks exists and apply overrides
+        val inbounds = root.optJSONArray("inbounds")
+        if (inbounds != null && inbounds.length() > 0) {
+            inbounds.optJSONObject(0)?.put("listen_port", listenPort)
+        }
         for (i in 0 until outbounds.length()) {
             val ob = outbounds.optJSONObject(i) ?: continue
-            val settings = ob.optJSONObject("settings")
-            var serverAddr = ""
-            var serverPort = 443
-            val vnext = settings?.optJSONArray("vnext")
-            if (vnext != null && vnext.length() > 0) {
-                val v0 = vnext.optJSONObject(0)
-                serverAddr = v0?.optString("address", "") ?: ""
-                serverPort = v0?.optInt("port", 443) ?: 443
-            } else {
-                val servers = settings?.optJSONArray("servers")
-                if (servers != null && servers.length() > 0) {
-                    val s0 = servers.optJSONObject(0)
-                    serverAddr = s0?.optString("address", "") ?: ""
-                    serverPort = s0?.optInt("port", 443) ?: 443
+            applyOverridesToSingBoxOutbound(ob, overrides)
+        }
+        return root
+    }
+
+    private fun convertXrayOutboundToSingBox(xOb: JSONObject, overrides: XrayOverrides): JSONObject {
+        val proto = xOb.optString("protocol", "vless")
+        val settings = xOb.optJSONObject("settings") ?: JSONObject()
+        val stream = xOb.optJSONObject("streamSettings") ?: JSONObject()
+        val ob = JSONObject().put("type", proto).put("tag", "proxy")
+
+        if (proto == "vless" || proto == "vmess") {
+            val v0 = settings.optJSONArray("vnext")?.optJSONObject(0) ?: JSONObject()
+            val u0 = v0.optJSONArray("users")?.optJSONObject(0) ?: JSONObject()
+            ob.put("server", v0.optString("address", ""))
+            ob.put("server_port", v0.optInt("port", 443))
+            ob.put("uuid", u0.optString("id", ""))
+            val flow = u0.optString("flow", "")
+            if (flow.isNotBlank()) ob.put("flow", flow)
+            if (proto == "vmess") {
+                ob.put("security", u0.optString("security", "auto"))
+                ob.put("alter_id", u0.optInt("alterId", 0))
+            }
+        } else if (proto == "trojan") {
+            val s0 = settings.optJSONArray("servers")?.optJSONObject(0) ?: JSONObject()
+            ob.put("server", s0.optString("address", ""))
+            ob.put("server_port", s0.optInt("port", 443))
+            ob.put("password", s0.optString("password", ""))
+        }
+
+        val security = stream.optString("security", "none").lowercase()
+        if (security == "tls") {
+            val xTls = stream.optJSONObject("tlsSettings") ?: JSONObject()
+            val sni = overrides.sniOverride.trim().ifEmpty { xTls.optString("serverName", ob.optString("server")) }
+            val insecure = overrides.allowInsecure || xTls.optBoolean("allowInsecure", false)
+            val tls = JSONObject()
+                .put("enabled", true)
+                .put("server_name", sni)
+                .put("insecure", insecure)
+                .put("utls", JSONObject().put("enabled", true).put("fingerprint", xTls.optString("fingerprint", "chrome").ifBlank { "chrome" }))
+            ob.put("tls", tls)
+        }
+
+        val net = stream.optString("network", "tcp").lowercase()
+        if (net == "ws") {
+            val xWs = stream.optJSONObject("wsSettings") ?: JSONObject()
+            val xHost = xWs.optJSONObject("headers")?.optString("Host", "") ?: ""
+            val host = overrides.hostOverride.trim().ifEmpty { xHost }
+            val ws = JSONObject()
+                .put("type", "ws")
+                .put("path", xWs.optString("path", "/").ifBlank { "/" })
+            if (host.isNotBlank()) {
+                ws.put("headers", JSONObject().put("Host", host))
+            }
+            ob.put("transport", ws)
+        } else if (net == "grpc") {
+            val xGrpc = stream.optJSONObject("grpcSettings") ?: JSONObject()
+            ob.put(
+                "transport",
+                JSONObject().put("type", "grpc").put("service_name", xGrpc.optString("serviceName", ""))
+            )
+        } else if (net == "httpupgrade") {
+            val xHu = stream.optJSONObject("httpupgradeSettings") ?: JSONObject()
+            val host = overrides.hostOverride.trim().ifEmpty { xHu.optString("host", "") }
+            val hu = JSONObject().put("type", "httpupgrade").put("path", xHu.optString("path", "/"))
+            if (host.isNotBlank()) hu.put("host", host)
+            ob.put("transport", hu)
+        }
+
+        return ob
+    }
+
+    private fun applyOverridesToSingBoxOutbound(ob: JSONObject, overrides: XrayOverrides) {
+        val hostOv = overrides.hostOverride.trim()
+        if (hostOv.isNotEmpty()) {
+            val tr = ob.optJSONObject("transport")
+            if (tr != null) {
+                val type = tr.optString("type", "")
+                if (type == "ws") {
+                    val hdrs = tr.optJSONObject("headers") ?: JSONObject().also { tr.put("headers", it) }
+                    hdrs.put("Host", hostOv)
+                } else if (type == "httpupgrade") {
+                    tr.put("host", hostOv)
                 }
             }
-            val stream = ob.optJSONObject("streamSettings") ?: continue
-            val hostOv = overrides.hostOverride.trim()
-            if (hostOv.isNotEmpty()) {
-                val ws = stream.optJSONObject("wsSettings")
-                if (ws != null) {
-                    val headers = ws.optJSONObject("headers") ?: JSONObject().also { ws.put("headers", it) }
-                    headers.put("Host", hostOv)
-                }
-                val hu = stream.optJSONObject("httpupgradeSettings")
-                hu?.put("host", hostOv)
-            }
-            val tls = stream.optJSONObject("tlsSettings")
-            if (tls != null) {
-                val hadInsecure = tls.optBoolean("allowInsecure", false)
-                tls.remove("allowInsecure")
-                val sniOv = overrides.sniOverride.trim()
-                if (sniOv.isNotEmpty()) {
-                    tls.put("serverName", sniOv)
-                }
-                val currentSni = tls.optString("serverName", "").ifBlank { serverAddr }
-                if ((hadInsecure || overrides.allowInsecure) && !tls.has("pinnedPeerCertSha256")) {
-                    val sha = fetchServerCertSha256(serverAddr, serverPort, currentSni)
-                    if (!sha.isNullOrBlank()) {
-                        tls.put("pinnedPeerCertSha256", sha)
-                    } else if (!tls.has("verifyPeerCertByName") && serverAddr.isNotBlank() && !serverAddr.equals(currentSni, ignoreCase = true)) {
-                        tls.put("verifyPeerCertByName", serverAddr)
-                    }
-                }
-            }
+        }
+        val tls = ob.optJSONObject("tls")
+        if (tls != null) {
+            val sniOv = overrides.sniOverride.trim()
+            if (sniOv.isNotEmpty()) tls.put("server_name", sniOv)
+            if (overrides.allowInsecure) tls.put("insecure", true)
         }
     }
 
@@ -314,81 +411,73 @@ object XrayTunnelManager {
         }.toMap()
     }
 
-    private fun buildStreamSettings(
+    private fun applyStreamToSingBox(
+        ob: JSONObject,
         q: Map<String, String>,
         defaultHost: String,
-        defaultPort: Int,
         overrides: XrayOverrides
-    ): JSONObject {
+    ) {
         val network = (q["type"] ?: "tcp").lowercase()
         val security = (q["security"] ?: "none").lowercase()
-        val stream = JSONObject().put("network", network).put("security", security)
-
         val effectiveHost = overrides.hostOverride.trim().ifEmpty { q["host"] ?: "" }
         val effectiveSni = overrides.sniOverride.trim()
             .ifEmpty { q["sni"] ?: effectiveHost.ifEmpty { defaultHost } }
         val linkInsecure = (q["allowInsecure"] ?: q["insecure"] ?: "").lowercase()
-        val effectiveInsecure = overrides.allowInsecure ||
-            linkInsecure == "1" || linkInsecure == "true"
+        val effectiveInsecure = overrides.allowInsecure || linkInsecure == "1" || linkInsecure == "true"
 
         when (network) {
             "ws" -> {
-                val ws = JSONObject().put("path", q["path"] ?: "/")
+                val ws = JSONObject()
+                    .put("type", "ws")
+                    .put("path", q["path"] ?: "/")
                 if (effectiveHost.isNotBlank()) {
                     ws.put("headers", JSONObject().put("Host", effectiveHost))
                 }
-                stream.put("wsSettings", ws)
+                ob.put("transport", ws)
             }
             "grpc" -> {
-                stream.put(
-                    "grpcSettings",
-                    JSONObject().put("serviceName", q["serviceName"] ?: q["path"] ?: "")
+                ob.put(
+                    "transport",
+                    JSONObject().put("type", "grpc").put("service_name", q["serviceName"] ?: q["path"] ?: "")
                 )
             }
             "httpupgrade" -> {
-                val hu = JSONObject().put("path", q["path"] ?: "/")
+                val hu = JSONObject().put("type", "httpupgrade").put("path", q["path"] ?: "/")
                 if (effectiveHost.isNotBlank()) hu.put("host", effectiveHost)
-                stream.put("httpupgradeSettings", hu)
+                ob.put("transport", hu)
             }
         }
 
         when (security) {
             "tls" -> {
-                val tls = JSONObject().put("serverName", effectiveSni)
-                var pcs = q["pcs"] ?: q["pinnedPeerCertSha256"]
-                if (pcs.isNullOrBlank() && effectiveInsecure) {
-                    pcs = fetchServerCertSha256(defaultHost, defaultPort, effectiveSni)
-                }
-                if (!pcs.isNullOrBlank()) {
-                    tls.put("pinnedPeerCertSha256", pcs)
-                } else {
-                    val vcn = (q["vcn"] ?: q["verifyPeerCertByName"]).orEmpty().ifBlank {
-                        if (effectiveInsecure && defaultHost.isNotBlank() && !defaultHost.equals(effectiveSni, ignoreCase = true)) {
-                            defaultHost
-                        } else ""
-                    }
-                    if (vcn.isNotBlank()) {
-                        tls.put("verifyPeerCertByName", vcn)
-                    }
-                }
-                val fp = q["fp"]
-                if (!fp.isNullOrBlank()) tls.put("fingerprint", fp)
+                val fp = (q["fp"] ?: "").ifBlank { "chrome" }
+                val tls = JSONObject()
+                    .put("enabled", true)
+                    .put("server_name", effectiveSni)
+                    .put("insecure", effectiveInsecure)
+                    .put("utls", JSONObject().put("enabled", true).put("fingerprint", fp))
                 val alpn = q["alpn"]
                 if (!alpn.isNullOrBlank()) {
                     tls.put("alpn", JSONArray(alpn.split(",")))
                 }
-                stream.put("tlsSettings", tls)
+                ob.put("tls", tls)
             }
             "reality" -> {
-                val reality = JSONObject()
-                    .put("serverName", effectiveSni)
-                    .put("fingerprint", q["fp"] ?: "chrome")
-                    .put("publicKey", q["pbk"] ?: "")
-                    .put("shortId", q["sid"] ?: "")
-                stream.put("realitySettings", reality)
+                val fp = (q["fp"] ?: "").ifBlank { "chrome" }
+                val tls = JSONObject()
+                    .put("enabled", true)
+                    .put("server_name", effectiveSni)
+                    .put("utls", JSONObject().put("enabled", true).put("fingerprint", fp))
+                    .put(
+                        "reality",
+                        JSONObject()
+                            .put("enabled", true)
+                            .put("public_key", q["pbk"] ?: "")
+                            .put("short_id", q["sid"] ?: "")
+                    )
+                ob.put("tls", tls)
             }
         }
-        return stream
     }
 
     private fun parseVless(raw: String, overrides: XrayOverrides): JSONObject {
@@ -398,22 +487,16 @@ object XrayTunnelManager {
         val port = if (uri.port > 0) uri.port else 443
         val q = parseQuery(uri.rawQuery)
 
-        val user = JSONObject()
-            .put("id", uuid)
-            .put("encryption", q["encryption"] ?: "none")
-        val flow = q["flow"]
-        if (!flow.isNullOrBlank()) user.put("flow", flow)
-
-        val vnext = JSONObject()
-            .put("address", host)
-            .put("port", port)
-            .put("users", JSONArray().put(user))
-
-        return JSONObject()
+        val ob = JSONObject()
+            .put("type", "vless")
             .put("tag", "proxy")
-            .put("protocol", "vless")
-            .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
-            .put("streamSettings", buildStreamSettings(q, host, port, overrides))
+            .put("server", host)
+            .put("server_port", port)
+            .put("uuid", uuid)
+        val flow = q["flow"]
+        if (!flow.isNullOrBlank()) ob.put("flow", flow)
+        applyStreamToSingBox(ob, q, host, overrides)
+        return ob
     }
 
     private fun parseVmess(raw: String, overrides: XrayOverrides): JSONObject {
@@ -434,21 +517,16 @@ object XrayTunnelManager {
         if (obj.has("fp")) q["fp"] = obj.optString("fp")
         if (obj.optBoolean("allowInsecure", false)) q["allowInsecure"] = "1"
 
-        val user = JSONObject()
-            .put("id", uuid)
-            .put("alterId", aid)
-            .put("security", obj.optString("scy", "auto"))
-
-        val vnext = JSONObject()
-            .put("address", host)
-            .put("port", port)
-            .put("users", JSONArray().put(user))
-
-        return JSONObject()
+        val ob = JSONObject()
+            .put("type", "vmess")
             .put("tag", "proxy")
-            .put("protocol", "vmess")
-            .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
-            .put("streamSettings", buildStreamSettings(q, host, port, overrides))
+            .put("server", host)
+            .put("server_port", port)
+            .put("uuid", uuid)
+            .put("alter_id", aid)
+            .put("security", obj.optString("scy", "auto"))
+        applyStreamToSingBox(ob, q, host, overrides)
+        return ob
     }
 
     private fun parseTrojan(raw: String, overrides: XrayOverrides): JSONObject {
@@ -459,16 +537,14 @@ object XrayTunnelManager {
         val q = parseQuery(uri.rawQuery).toMutableMap()
         if (!q.containsKey("security")) q["security"] = "tls"
 
-        val server = JSONObject()
-            .put("address", host)
-            .put("port", port)
-            .put("password", pass)
-
-        return JSONObject()
+        val ob = JSONObject()
+            .put("type", "trojan")
             .put("tag", "proxy")
-            .put("protocol", "trojan")
-            .put("settings", JSONObject().put("servers", JSONArray().put(server)))
-            .put("streamSettings", buildStreamSettings(q, host, port, overrides))
+            .put("server", host)
+            .put("server_port", port)
+            .put("password", pass)
+        applyStreamToSingBox(ob, q, host, overrides)
+        return ob
     }
 
     private fun parseShadowsocks(raw: String): JSONObject {
@@ -494,26 +570,23 @@ object XrayTunnelManager {
             listOf(m, p, h, pt.toString())
         }
 
-        val server = JSONObject()
-            .put("address", host)
-            .put("port", port.toInt())
+        return JSONObject()
+            .put("type", "shadowsocks")
+            .put("tag", "proxy")
+            .put("server", host)
+            .put("server_port", port.toInt())
             .put("method", method)
             .put("password", pass)
-
-        return JSONObject()
-            .put("tag", "proxy")
-            .put("protocol", "shadowsocks")
-            .put("settings", JSONObject().put("servers", JSONArray().put(server)))
     }
 
     private fun parseSocksUri(raw: String): JSONObject {
         val uri = URI(raw)
         val host = uri.host ?: error("Missing host")
         val port = if (uri.port > 0) uri.port else 1080
-        val server = JSONObject().put("address", host).put("port", port)
         return JSONObject()
+            .put("type", "socks")
             .put("tag", "proxy")
-            .put("protocol", "socks")
-            .put("settings", JSONObject().put("servers", JSONArray().put(server)))
+            .put("server", host)
+            .put("server_port", port)
     }
 }

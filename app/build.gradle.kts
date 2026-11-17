@@ -13,8 +13,8 @@ android {
         applicationId = "com.khereba1.nearchat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 24
-        versionName = "1.8.1"
+        versionCode = 25
+        versionName = "1.9.0"
     }
 
     signingConfigs {
@@ -74,4 +74,5 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("com.google.zxing:core:3.5.3")
+    implementation("net.clever-vpn:libbox-android:2.1.3")
 }
