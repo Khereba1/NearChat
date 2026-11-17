@@ -51,6 +51,8 @@ object WifiProxyServer {
     private var appContext: Context? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var upstreamHost: String = ""
+    private var upstreamPort: Int = 0
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _state = MutableStateFlow(RouterBridgeState())
@@ -74,8 +76,17 @@ object WifiProxyServer {
         if (running.get()) return
         val ctx = context.applicationContext
         appContext = ctx
-        val customPass = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString("router_pass", "NearChat123") ?: "NearChat123"
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val customPass = prefs.getString("router_pass", "NearChat123") ?: "NearChat123"
+        val upstream = (prefs.getString("upstream_socks", "") ?: "").trim()
+        if (upstream.contains(":")) {
+            upstreamHost = upstream.substringBefore(":").trim()
+            upstreamPort = upstream.substringAfter(":").trim().toIntOrNull() ?: 0
+        } else {
+            upstreamHost = ""
+            upstreamPort = 0
+        }
+
         try {
             val ss = try {
                 ServerSocket(preferredPort, 100, InetAddress.getByName("0.0.0.0"))
@@ -315,6 +326,9 @@ object WifiProxyServer {
     }
 
     private fun openInternetSocket(host: String, port: Int): Socket {
+        if (upstreamHost.isNotEmpty() && upstreamPort in 1..65535) {
+            return openViaUpstreamSocks5(upstreamHost, upstreamPort, host, port)
+        }
         val net = activeInternetNetwork()
         val sock = if (net != null) {
             try {
@@ -327,6 +341,45 @@ object WifiProxyServer {
         }
         tuneSocket(sock)
         return sock
+    }
+
+    private fun openViaUpstreamSocks5(upHost: String, upPort: Int, targetHost: String, targetPort: Int): Socket {
+        val s = Socket(upHost, upPort)
+        tuneSocket(s)
+        val outS = s.getOutputStream()
+        val inS = s.getInputStream()
+        outS.write(byteArrayOf(0x05, 0x01, 0x00))
+        outS.flush()
+        val r0 = inS.read()
+        val r1 = inS.read()
+        if (r0 != 0x05 || r1 != 0x00) {
+            s.close()
+            throw java.io.IOException("Upstream SOCKS5 auth failed")
+        }
+        val hostBytes = targetHost.toByteArray(StandardCharsets.UTF_8)
+        val req = ByteArray(7 + hostBytes.size)
+        req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x03
+        req[4] = hostBytes.size.toByte()
+        System.arraycopy(hostBytes, 0, req, 5, hostBytes.size)
+        req[5 + hostBytes.size] = ((targetPort shr 8) and 0xFF).toByte()
+        req[6 + hostBytes.size] = (targetPort and 0xFF).toByte()
+        outS.write(req)
+        outS.flush()
+        val hdr = ByteArray(4)
+        readExact(inS, hdr)
+        if (hdr[1] != 0x00.toByte()) {
+            s.close()
+            throw java.io.IOException("Upstream SOCKS5 connect failed: ${hdr[1]}")
+        }
+        when (hdr[3].toInt() and 0xFF) {
+            0x01 -> readExact(inS, ByteArray(6))
+            0x03 -> {
+                val l = inS.read()
+                if (l > 0) readExact(inS, ByteArray(l + 2))
+            }
+            0x04 -> readExact(inS, ByteArray(18))
+        }
+        return s
     }
 
     private fun openInternetDatagramSocket(): DatagramSocket {

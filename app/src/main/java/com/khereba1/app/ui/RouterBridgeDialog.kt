@@ -65,8 +65,14 @@ fun RouterBridgeDialog(
     var customPass by remember {
         mutableStateOf(prefs.getString("router_pass", "NearChat123") ?: "NearChat123")
     }
+    var upstreamSocks by remember {
+        mutableStateOf(prefs.getString("upstream_socks", "") ?: "")
+    }
     var clientHostIp by remember {
         mutableStateOf(prefs.getString("vpn_host_ip", "192.168.49.1") ?: "192.168.49.1")
+    }
+    var clientPort by remember {
+        mutableStateOf(prefs.getString("vpn_host_port", "1080") ?: "1080")
     }
     val isVpnRunning by NearChatVpnService.isRunning.collectAsState()
     val supportsDirectHotspot = remember { WifiProxyServer.supportsDirectWifiHotspot(context) }
@@ -75,7 +81,8 @@ fun RouterBridgeDialog(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
         if (res.resultCode == Activity.RESULT_OK) {
-            NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, 1080)
+            val portNum = clientPort.trim().toIntOrNull()?.coerceIn(1, 65535) ?: 1080
+            NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, portNum)
         }
     }
 
@@ -125,14 +132,26 @@ fun RouterBridgeDialog(
                     }
                 }
 
-                if (!state.isRunning && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (!state.isRunning) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        OutlinedTextField(
+                            value = customPass,
+                            onValueChange = {
+                                customPass = it
+                                prefs.edit().putString("router_pass", it).apply()
+                            },
+                            label = { Text(stringResource(R.string.router_custom_pass)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                     OutlinedTextField(
-                        value = customPass,
+                        value = upstreamSocks,
                         onValueChange = {
-                            customPass = it
-                            prefs.edit().putString("router_pass", it).apply()
+                            upstreamSocks = it
+                            prefs.edit().putString("upstream_socks", it).apply()
                         },
-                        label = { Text(stringResource(R.string.router_custom_pass)) },
+                        label = { Text(stringResource(R.string.upstream_socks_label)) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -238,16 +257,28 @@ fun RouterBridgeDialog(
                     fontWeight = FontWeight.Bold
                 )
                 if (!isVpnRunning) {
-                    OutlinedTextField(
-                        value = clientHostIp,
-                        onValueChange = {
-                            clientHostIp = it
-                            prefs.edit().putString("vpn_host_ip", it).apply()
-                        },
-                        label = { Text(stringResource(R.string.vpn_host_ip)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = clientHostIp,
+                            onValueChange = {
+                                clientHostIp = it
+                                prefs.edit().putString("vpn_host_ip", it).apply()
+                            },
+                            label = { Text(stringResource(R.string.vpn_host_ip)) },
+                            singleLine = true,
+                            modifier = Modifier.weight(2f)
+                        )
+                        OutlinedTextField(
+                            value = clientPort,
+                            onValueChange = {
+                                clientPort = it.filter { ch -> ch.isDigit() }
+                                prefs.edit().putString("vpn_host_port", clientPort).apply()
+                            },
+                            label = { Text(stringResource(R.string.vpn_port_label)) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                     Button(
                         enabled = !state.isRunning,
                         onClick = {
@@ -255,7 +286,8 @@ fun RouterBridgeDialog(
                             if (prep != null) {
                                 vpnPermLauncher.launch(prep)
                             } else {
-                                NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, 1080)
+                                val portNum = clientPort.trim().toIntOrNull()?.coerceIn(1, 65535) ?: 1080
+                                NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, portNum)
                             }
                         },
                         modifier = Modifier.fillMaxWidth()

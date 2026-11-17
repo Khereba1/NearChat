@@ -56,7 +56,7 @@ class NearChatVpnService : VpnService() {
         }
 
         val hostIp = intent?.getStringExtra(EXTRA_HOST_IP)?.trim()?.ifEmpty { "192.168.49.1" } ?: "192.168.49.1"
-        val socksPort = intent?.getIntExtra(EXTRA_SOCKS_PORT, 1080) ?: 1080
+        val socksPort = (intent?.getIntExtra(EXTRA_SOCKS_PORT, 1080) ?: 1080).coerceIn(1, 65535)
 
         ensureChannel()
         val openIntent = PendingIntent.getActivity(

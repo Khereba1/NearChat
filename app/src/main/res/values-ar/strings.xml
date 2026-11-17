@@ -91,4 +91,6 @@
     <string name="hw_p2p_recommended">جهازك بشريحة واحدة — الأنسب استخدام وضع Wi-Fi Direct + البروكسي.</string>
     <string name="open_hotspot_settings">فتح إعدادات نقطة الاتصال</string>
     <string name="stop_vpn_first">افصل الـ VPN الأول قبل تشغيل البث على نفس الجهاز.</string>
+    <string name="vpn_port_label">البورت</string>
+    <string name="upstream_socks_label">بروكسي خارجي (اختياري، مثلاً 127.0.0.1:2080)</string>
 </resources>

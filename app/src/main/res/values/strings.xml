@@ -95,4 +95,6 @@
     <string name="hw_p2p_recommended">Single-chip Wi-Fi detected — Wi-Fi Direct + Proxy mode is recommended.</string>
     <string name="open_hotspot_settings">Open Hotspot Settings</string>
     <string name="stop_vpn_first">Disconnect Client VPN first before starting Host Router.</string>
+    <string name="vpn_port_label">Port</string>
+    <string name="upstream_socks_label">Upstream SOCKS5 (optional, e.g. 127.0.0.1:2080)</string>
 </resources>
