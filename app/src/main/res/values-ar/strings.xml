@@ -93,4 +93,8 @@
     <string name="stop_vpn_first">افصل الـ VPN الأول قبل تشغيل البث على نفس الجهاز.</string>
     <string name="vpn_port_label">البورت</string>
     <string name="upstream_socks_label">بروكسي خارجي (اختياري، مثلاً 127.0.0.1:2080)</string>
+    <string name="xray_section">نواة الاتصال المدمجة (Xray)</string>
+    <string name="xray_link_label">رابط الإعداد (vless://, trojan://, ss://) أو JSON</string>
+    <string name="xray_start">تشغيل النفق (127.0.0.1:10808)</string>
+    <string name="xray_stop">إيقاف النفق</string>
 </resources>

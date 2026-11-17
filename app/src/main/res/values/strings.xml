@@ -97,4 +97,8 @@
     <string name="stop_vpn_first">Disconnect Client VPN first before starting Host Router.</string>
     <string name="vpn_port_label">Port</string>
     <string name="upstream_socks_label">Upstream SOCKS5 (optional, e.g. 127.0.0.1:2080)</string>
+    <string name="xray_section">Built-in Tunnel Core (Xray)</string>
+    <string name="xray_link_label">Config link (vless://, trojan://, ss://) or JSON</string>
+    <string name="xray_start">Start Tunnel (127.0.0.1:10808)</string>
+    <string name="xray_stop">Stop Tunnel</string>
 </resources>

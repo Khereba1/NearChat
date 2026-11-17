@@ -52,6 +52,7 @@ import com.khereba1.app.R
 import com.khereba1.app.network.NearChatVpnService
 import com.khereba1.app.network.RouterBridgeState
 import com.khereba1.app.network.WifiProxyServer
+import com.khereba1.app.network.XrayTunnelManager
 
 @Composable
 fun RouterBridgeDialog(
@@ -68,6 +69,9 @@ fun RouterBridgeDialog(
     var upstreamSocks by remember {
         mutableStateOf(prefs.getString("upstream_socks", "") ?: "")
     }
+    var xrayConfig by remember {
+        mutableStateOf(prefs.getString("xray_config", "") ?: "")
+    }
     var clientHostIp by remember {
         mutableStateOf(prefs.getString("vpn_host_ip", "192.168.49.1") ?: "192.168.49.1")
     }
@@ -75,6 +79,7 @@ fun RouterBridgeDialog(
         mutableStateOf(prefs.getString("vpn_host_port", "1080") ?: "1080")
     }
     val isVpnRunning by NearChatVpnService.isRunning.collectAsState()
+    val xrayState by XrayTunnelManager.state.collectAsState()
     val supportsDirectHotspot = remember { WifiProxyServer.supportsDirectWifiHotspot(context) }
 
     val vpnPermLauncher = rememberLauncherForActivityResult(
@@ -131,6 +136,53 @@ fun RouterBridgeDialog(
                         }
                     }
                 }
+
+                // Built-in Xray Core section
+                Text(
+                    text = stringResource(R.string.xray_section),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                OutlinedTextField(
+                    value = xrayConfig,
+                    onValueChange = {
+                        xrayConfig = it
+                        prefs.edit().putString("xray_config", it).apply()
+                    },
+                    label = { Text(stringResource(R.string.xray_link_label)) },
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (xrayState.status.isNotEmpty()) {
+                    Text(
+                        text = xrayState.status,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (xrayState.isRunning) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error
+                    )
+                }
+                if (!xrayState.isRunning) {
+                    Button(
+                        onClick = {
+                            XrayTunnelManager.start(context, xrayConfig)
+                            val localAddr = "127.0.0.1:${XrayTunnelManager.LOCAL_SOCKS_PORT}"
+                            upstreamSocks = localAddr
+                            prefs.edit().putString("upstream_socks", localAddr).apply()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.xray_start))
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { XrayTunnelManager.stop() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.xray_stop))
+                    }
+                }
+
+                HorizontalDivider()
 
                 if (!state.isRunning) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
