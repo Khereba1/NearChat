@@ -3,8 +3,11 @@ package com.khereba1.app.network
 import android.content.Context
 import android.util.Base64
 import com.khereba1.app.AppLog
+import com.khereba1.app.PREFS
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
@@ -13,10 +16,17 @@ import org.json.JSONObject
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.util.UUID
 
 data class XrayState(
     val isRunning: Boolean = false,
     val status: String = ""
+)
+
+data class XrayProfile(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val config: String
 )
 
 object XrayTunnelManager {
@@ -26,6 +36,58 @@ object XrayTunnelManager {
     val state: StateFlow<XrayState> = _state
 
     const val LOCAL_SOCKS_PORT = 10808
+    private const val PREF_PROFILES = "xray_profiles_json"
+
+    fun loadProfiles(context: Context): List<XrayProfile> {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(PREF_PROFILES, "[]") ?: "[]"
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                XrayProfile(
+                    id = o.optString("id", UUID.randomUUID().toString()),
+                    name = o.optString("name", "Profile"),
+                    config = o.optString("config", "")
+                )
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    fun saveProfile(context: Context, name: String, config: String): List<XrayProfile> {
+        val list = loadProfiles(context).toMutableList()
+        list.add(XrayProfile(name = name.trim().ifEmpty { "Profile ${list.size + 1}" }, config = config.trim()))
+        persistProfiles(context, list)
+        return list
+    }
+
+    fun deleteProfile(context: Context, id: String): List<XrayProfile> {
+        val list = loadProfiles(context).filterNot { it.id == id }
+        persistProfiles(context, list)
+        return list
+    }
+
+    private fun persistProfiles(context: Context, list: List<XrayProfile>) {
+        val arr = JSONArray()
+        for (p in list) {
+            arr.put(JSONObject().put("id", p.id).put("name", p.name).put("config", p.config))
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(PREF_PROFILES, arr.toString()).apply()
+    }
+
+    suspend fun testPing(context: Context, rawInput: String): Result<Long> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (!envInitialized) {
+                Libv2ray.initCoreEnv(context.filesDir.absolutePath, "")
+                envInitialized = true
+            }
+            val cfg = buildConfigJson(rawInput.trim())
+            Libv2ray.measureOutboundDelay(cfg, "https://www.gstatic.com/generate_204")
+        }
+    }
 
     fun start(context: Context, rawInput: String) {
         stop()
@@ -85,17 +147,17 @@ object XrayTunnelManager {
 
     private fun buildConfigJson(input: String): String {
         if (input.startsWith("{")) {
-            // Ensure it parses as valid JSON
             JSONObject(input)
             return input
         }
 
         val outbound = when {
             input.startsWith("vless://", ignoreCase = true) -> parseVless(input)
+            input.startsWith("vmess://", ignoreCase = true) -> parseVmess(input)
             input.startsWith("trojan://", ignoreCase = true) -> parseTrojan(input)
             input.startsWith("ss://", ignoreCase = true) -> parseShadowsocks(input)
             input.startsWith("socks://", ignoreCase = true) -> parseSocksUri(input)
-            else -> error("Unsupported scheme (use vless://, trojan://, ss://, socks://, or JSON)")
+            else -> error("Unsupported scheme (use vless://, vmess://, trojan://, ss://, socks://, or JSON)")
         }
 
         val inbound = JSONObject()
@@ -195,6 +257,40 @@ object XrayTunnelManager {
         return JSONObject()
             .put("tag", "proxy")
             .put("protocol", "vless")
+            .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
+            .put("streamSettings", buildStreamSettings(q, host))
+    }
+
+    private fun parseVmess(raw: String): JSONObject {
+        val b64 = raw.removePrefix("vmess://").trim()
+        val jsonText = String(Base64.decode(b64, Base64.DEFAULT), StandardCharsets.UTF_8)
+        val obj = JSONObject(jsonText)
+        val host = obj.getString("add")
+        val port = obj.optString("port", "443").toIntOrNull() ?: obj.optInt("port", 443)
+        val uuid = obj.getString("id")
+        val aid = obj.optString("aid", "0").toIntOrNull() ?: 0
+
+        val q = mutableMapOf<String, String>()
+        q["type"] = obj.optString("net", "tcp")
+        q["security"] = if (obj.optString("tls", "").equals("tls", ignoreCase = true)) "tls" else "none"
+        if (obj.has("host")) q["host"] = obj.optString("host")
+        if (obj.has("path")) q["path"] = obj.optString("path")
+        if (obj.has("sni")) q["sni"] = obj.optString("sni")
+        if (obj.has("fp")) q["fp"] = obj.optString("fp")
+
+        val user = JSONObject()
+            .put("id", uuid)
+            .put("alterId", aid)
+            .put("security", obj.optString("scy", "auto"))
+
+        val vnext = JSONObject()
+            .put("address", host)
+            .put("port", port)
+            .put("users", JSONArray().put(user))
+
+        return JSONObject()
+            .put("tag", "proxy")
+            .put("protocol", "vmess")
             .put("settings", JSONObject().put("vnext", JSONArray().put(vnext)))
             .put("streamSettings", buildStreamSettings(q, host))
     }

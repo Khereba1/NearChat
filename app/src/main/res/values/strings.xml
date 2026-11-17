@@ -25,6 +25,7 @@
     <string name="delete">Delete</string>
     <string name="rename">Rename</string>
     <string name="edit">Edit</string>
+    <string name="reply">Reply</string>
     <string name="copy">Copy</string>
     <string name="open">Open</string>
     <string name="share">Share</string>
@@ -78,7 +79,7 @@
     <string name="bt_permission_needed">Bluetooth permission is needed to chat without Wi-Fi.</string>
     <string name="bt_no_paired">No paired Bluetooth devices found. Pair both phones in Android Settings first.</string>
     <string name="bt_tip">Works completely offline without Wi-Fi or Hotspot. Pair the two phones in Bluetooth settings, then one taps Host and the other Connects.</string>
-    <string name="router_title">Wi-Fi Repeater &amp; VPN</string>
+    <string name="router_title">Network Hub</string>
     <string name="router_desc">Share internet via Wi-Fi Direct + Proxy, or receive via VPN.</string>
     <string name="router_start">Start Router Bridge</string>
     <string name="router_stop">Stop Router Bridge</string>
@@ -98,7 +99,24 @@
     <string name="vpn_port_label">Port</string>
     <string name="upstream_socks_label">Upstream SOCKS5 (optional, e.g. 127.0.0.1:2080)</string>
     <string name="xray_section">Built-in Tunnel Core (Xray)</string>
-    <string name="xray_link_label">Config link (vless://, trojan://, ss://) or JSON</string>
+    <string name="xray_link_label">Config link (vless://, vmess://, trojan://, ss://) or JSON</string>
     <string name="xray_start">Start Tunnel (127.0.0.1:10808)</string>
     <string name="xray_stop">Stop Tunnel</string>
+    <string name="profile_name_label">Profile name</string>
+    <string name="save_profile">Save Profile</string>
+    <string name="ping_test">Test Ping</string>
+    <string name="saved_profiles">Saved Profiles</string>
+    <string name="tab_router">Host Router</string>
+    <string name="tab_vpn">Client VPN</string>
+    <string name="tab_xray">Xray</string>
+    <string name="tab_calls">Voice Call</string>
+    <string name="call_peer_ip">Peer IP address (e.g. 192.168.49.1)</string>
+    <string name="call_start">Start Voice Call</string>
+    <string name="call_listen">Listen for Incoming Call</string>
+    <string name="call_end">End Call</string>
+    <string name="call_mute">Mute</string>
+    <string name="call_speaker">Speaker</string>
+    <string name="call_my_ip">Your Local IP: %1$s</string>
+    <string name="today_label">Today</string>
+    <string name="yesterday_label">Yesterday</string>
 </resources>

@@ -7,9 +7,9 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.util.LruCache
 import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -34,7 +34,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -42,8 +42,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
@@ -122,8 +124,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+
+private val thumbCache = LruCache<String, ImageBitmap>(40)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -146,6 +151,7 @@ fun ChatScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
+    var replyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var showLanSheet by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var viewImageFile by remember { mutableStateOf<File?>(null) }
@@ -172,7 +178,6 @@ fun ChatScreen(
         }
     }
 
-    // Reliable auto-scroll whenever a new message arrives or is sent
     LaunchedEffect(messages.size, messages.lastOrNull()?.id) {
         if (messages.isNotEmpty()) {
             delay(60)
@@ -242,100 +247,145 @@ fun ChatScreen(
                 tonalElevation = 6.dp,
                 modifier = Modifier.navigationBarsPadding().imePadding()
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onPickAttachments) {
-                        Icon(
-                            Icons.Rounded.AttachFile,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (isRecording) {
+                Column {
+                    replyTarget?.let { rep ->
                         Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(24.dp))
-                                .background(MaterialTheme.colorScheme.errorContainer)
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.error)
+                            Icon(
+                                Icons.AutoMirrored.Rounded.Reply,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "${stringResource(R.string.recording_label)} ${recSeconds}s",
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                fontWeight = FontWeight.SemiBold
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = rep.senderName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = rep.text.ifBlank { rep.mediaFileName ?: "Media" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(onClick = { replyTarget = null }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
                         }
-                        Spacer(Modifier.width(6.dp))
-                        IconButton(
-                            onClick = onStopRecording,
-                            modifier = Modifier
-                                .size(46.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.error)
-                        ) {
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = onPickAttachments) {
                             Icon(
-                                Icons.Rounded.Stop,
+                                Icons.Rounded.AttachFile,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onError
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                    } else {
-                        OutlinedTextField(
-                            value = input,
-                            onValueChange = { input = it },
-                            placeholder = { Text(stringResource(R.string.message_hint)) },
-                            maxLines = 4,
-                            shape = RoundedCornerShape(24.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-                                focusedBorderColor = MaterialTheme.colorScheme.primary
-                            ),
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        AnimatedContent(targetState = input.isNotBlank(), label = "send_mic") { hasText ->
-                            if (hasText) {
-                                IconButton(
-                                    onClick = {
-                                        onSendText(input)
-                                        input = ""
-                                    },
+                        if (isRecording) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(24.dp))
+                                    .background(MaterialTheme.colorScheme.errorContainer)
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
                                     modifier = Modifier
-                                        .size(46.dp)
+                                        .size(10.dp)
                                         .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primary)
-                                ) {
-                                    Icon(
-                                        Icons.AutoMirrored.Rounded.Send,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimary
-                                    )
-                                }
-                            } else {
-                                IconButton(
-                                    onClick = onStartRecording,
-                                    modifier = Modifier
-                                        .size(46.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primaryContainer)
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.Mic,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
+                                        .background(MaterialTheme.colorScheme.error)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "${stringResource(R.string.recording_label)} ${recSeconds}s",
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            IconButton(
+                                onClick = onStopRecording,
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.error)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Stop,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onError
+                                )
+                            }
+                        } else {
+                            OutlinedTextField(
+                                value = input,
+                                onValueChange = { input = it },
+                                placeholder = { Text(stringResource(R.string.message_hint)) },
+                                maxLines = 4,
+                                shape = RoundedCornerShape(24.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            AnimatedContent(targetState = input.isNotBlank(), label = "send_mic") { hasText ->
+                                if (hasText) {
+                                    IconButton(
+                                        onClick = {
+                                            val rep = replyTarget
+                                            val finalMsg = if (rep != null) {
+                                                val snippet = rep.text.ifBlank { rep.mediaFileName ?: "Media" }
+                                                    .replace("\n", " ").take(60)
+                                                "↩ ${rep.senderName}: $snippet\n---\n${input.trim()}"
+                                            } else {
+                                                input
+                                            }
+                                            onSendText(finalMsg)
+                                            input = ""
+                                            replyTarget = null
+                                        },
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary)
+                                    ) {
+                                        Icon(
+                                            Icons.AutoMirrored.Rounded.Send,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    }
+                                } else {
+                                    IconButton(
+                                        onClick = onStartRecording,
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primaryContainer)
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.Mic,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -384,32 +434,40 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(messages, key = { it.id }) { msg ->
-                        val file = msg.mediaFileName?.let { getMediaFile(it) }
-                        val isMine = msg.senderName == "Me" || msg.senderName == meLabel
-                        MessageBubble(
-                            modifier = Modifier.animateItem(),
-                            message = msg,
-                            isMine = isMine,
-                            mediaFile = file,
-                            playbackState = playbackState,
-                            onToggleAudio = {
-                                if (file != null) AudioPlayerManager.toggle(msg.id, file)
-                            },
-                            onSeekAudio = { pos -> AudioPlayerManager.seekTo(pos) },
-                            onOpenMedia = {
-                                if (file != null) {
-                                    when (msg.type) {
-                                        MessageType.IMAGE -> viewImageFile = file
-                                        MessageType.VIDEO -> playVideoFile = file
-                                        else -> openFileExternally(context, file, msg.mediaMime)
+                    itemsIndexed(messages, key = { _, m -> m.id }) { index, msg ->
+                        val prev = messages.getOrNull(index - 1)
+                        val showDateHeader = prev == null || !isSameDay(prev.createdAt, msg.createdAt)
+                        Column(modifier = Modifier.animateItem()) {
+                            if (showDateHeader) {
+                                DatePillHeader(timestampMs = msg.createdAt)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                            val file = msg.mediaFileName?.let { getMediaFile(it) }
+                            val isMine = msg.senderName == "Me" || msg.senderName == meLabel
+                            MessageBubble(
+                                message = msg,
+                                isMine = isMine,
+                                mediaFile = file,
+                                playbackState = playbackState,
+                                onToggleAudio = {
+                                    if (file != null) AudioPlayerManager.toggle(msg.id, file)
+                                },
+                                onSeekAudio = { pos -> AudioPlayerManager.seekTo(pos) },
+                                onOpenMedia = {
+                                    if (file != null) {
+                                        when (msg.type) {
+                                            MessageType.IMAGE -> viewImageFile = file
+                                            MessageType.VIDEO -> playVideoFile = file
+                                            else -> openFileExternally(context, file, msg.mediaMime)
+                                        }
                                     }
-                                }
-                            },
-                            onCopyText = { copyToClipboard(context, msg.text) },
-                            onEditText = { editTarget = msg },
-                            onDelete = { onDeleteMessage(msg.id) }
-                        )
+                                },
+                                onReply = { replyTarget = msg },
+                                onCopyText = { copyToClipboard(context, msg.text) },
+                                onEditText = { editTarget = msg },
+                                onDelete = { onDeleteMessage(msg.id) }
+                            )
+                        }
                     }
                 }
             }
@@ -486,6 +544,47 @@ fun ChatScreen(
 }
 
 @Composable
+private fun DatePillHeader(timestampMs: Long) {
+    val todayLabel = stringResource(R.string.today_label)
+    val yesterdayLabel = stringResource(R.string.yesterday_label)
+    val label = remember(timestampMs, todayLabel, yesterdayLabel) {
+        val now = Calendar.getInstance()
+        val msgCal = Calendar.getInstance().apply { timeInMillis = timestampMs }
+        when {
+            isSameDay(now.timeInMillis, timestampMs) -> todayLabel
+            else -> {
+                now.add(Calendar.DAY_OF_YEAR, -1)
+                if (now.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR) &&
+                    now.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR)
+                ) yesterdayLabel
+                else SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(timestampMs))
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Surface(
+            shape = RoundedCornerShape(99.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+private fun isSameDay(t1: Long, t2: Long): Boolean {
+    val c1 = Calendar.getInstance().apply { timeInMillis = t1 }
+    val c2 = Calendar.getInstance().apply { timeInMillis = t2 }
+    return c1.get(Calendar.YEAR) == c2.get(Calendar.YEAR) &&
+        c1.get(Calendar.DAY_OF_YEAR) == c2.get(Calendar.DAY_OF_YEAR)
+}
+
+@Composable
 private fun MessageBubble(
     modifier: Modifier = Modifier,
     message: ChatMessage,
@@ -495,6 +594,7 @@ private fun MessageBubble(
     onToggleAudio: () -> Unit,
     onSeekAudio: (Int) -> Unit,
     onOpenMedia: () -> Unit,
+    onReply: () -> Unit,
     onCopyText: () -> Unit,
     onEditText: () -> Unit,
     onDelete: () -> Unit
@@ -505,6 +605,16 @@ private fun MessageBubble(
     }
     val isActiveAudio = playbackState.activeMessageId == message.id
     val isPlayingAudio = isActiveAudio && playbackState.isPlaying
+
+    val (replyQuote, bodyText) = remember(message.text) {
+        if (message.text.startsWith("↩ ") && message.text.contains("\n---\n")) {
+            val q = message.text.substringAfter("↩ ").substringBefore("\n---\n")
+            val b = message.text.substringAfter("\n---\n")
+            q to b
+        } else {
+            null to message.text
+        }
+    }
 
     Box(
         modifier = modifier.fillMaxWidth(),
@@ -549,7 +659,15 @@ private fun MessageBubble(
                             )
                         }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            if (message.text.isNotBlank()) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.reply)) },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Reply, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    onReply()
+                                }
+                            )
+                            if (bodyText.isNotBlank()) {
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.copy)) },
                                     leadingIcon = { Icon(Icons.Rounded.ContentCopy, contentDescription = null) },
@@ -591,9 +709,28 @@ private fun MessageBubble(
                     }
                 }
 
-                if (message.text.isNotBlank()) {
+                if (replyQuote != null) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 4.dp)
+                    ) {
+                        Text(
+                            text = replyQuote,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                if (bodyText.isNotBlank()) {
                     Text(
-                        text = message.text,
+                        text = bodyText,
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }
@@ -602,12 +739,17 @@ private fun MessageBubble(
                     Spacer(Modifier.height(4.dp))
                     when (message.type) {
                         MessageType.IMAGE -> {
-                            val bmp by produceState<ImageBitmap?>(initialValue = null, mediaFile.absolutePath) {
-                                value = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-                                        BitmapFactory.decodeFile(mediaFile.absolutePath, opts)?.asImageBitmap()
-                                    }.getOrNull()
+                            val bmp by produceState<ImageBitmap?>(
+                                initialValue = thumbCache.get(mediaFile.absolutePath),
+                                mediaFile.absolutePath
+                            ) {
+                                if (value == null) {
+                                    value = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+                                            BitmapFactory.decodeFile(mediaFile.absolutePath, opts)?.asImageBitmap()
+                                        }.getOrNull()?.also { thumbCache.put(mediaFile.absolutePath, it) }
+                                    }
                                 }
                             }
                             if (bmp != null) {
@@ -627,9 +769,15 @@ private fun MessageBubble(
                         }
 
                         MessageType.VIDEO -> {
-                            val thumb by produceState<ImageBitmap?>(initialValue = null, mediaFile.absolutePath) {
-                                value = withContext(Dispatchers.IO) {
-                                    extractVideoThumb(mediaFile)?.asImageBitmap()
+                            val thumb by produceState<ImageBitmap?>(
+                                initialValue = thumbCache.get(mediaFile.absolutePath),
+                                mediaFile.absolutePath
+                            ) {
+                                if (value == null) {
+                                    value = withContext(Dispatchers.IO) {
+                                        extractVideoThumb(mediaFile)?.asImageBitmap()
+                                            ?.also { thumbCache.put(mediaFile.absolutePath, it) }
+                                    }
                                 }
                             }
                             Box(
@@ -793,7 +941,7 @@ private fun LanShareDialog(
     }
     val viewerLink = if (baseUrl.isNotEmpty()) "$baseUrl/c/${room.viewerToken}" else ""
     val editorLink = if (baseUrl.isNotEmpty()) "$baseUrl/c/${room.editorToken}" else ""
-    var selectedTab by remember { mutableIntStateOf(0) } // 0 = Viewer, 1 = Editor
+    var selectedTab by remember { mutableIntStateOf(0) }
 
     val activeLink = if (selectedTab == 0) viewerLink else editorLink
     val activeCode = if (selectedTab == 0) room.viewerToken else room.editorToken

@@ -43,6 +43,7 @@ import com.khereba1.app.network.WifiProxyServer
 import com.khereba1.app.ui.BluetoothChatScreen
 import com.khereba1.app.ui.ChatScreen
 import com.khereba1.app.ui.HomeScreen
+import com.khereba1.app.ui.NetworkHubScreen
 import com.khereba1.app.ui.RemoteChatScreen
 import com.khereba1.app.ui.SharePickerDialog
 import com.khereba1.app.ui.theme.NearChatTheme
@@ -61,6 +62,7 @@ private sealed interface NavRoute {
     data class LocalChat(val chatId: String) : NavRoute
     data class RemoteChat(val info: RemoteChatInfo, val displayName: String) : NavRoute
     data object BluetoothChat : NavRoute
+    data object NetworkHub : NavRoute
 }
 
 class MainActivity : ComponentActivity() {
@@ -100,6 +102,7 @@ class MainActivity : ComponentActivity() {
                 var activeChatId by remember { mutableStateOf<String?>(null) }
                 var remoteSession by remember { mutableStateOf<Pair<RemoteChatInfo, String>?>(null) }
                 var showBluetooth by remember { mutableStateOf(false) }
+                var showNetworkHub by remember { mutableStateOf(false) }
                 var isRecording by remember { mutableStateOf(false) }
 
                 val prefs = remember { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
@@ -159,6 +162,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val currentRoute: NavRoute = when {
+                    showNetworkHub -> NavRoute.NetworkHub
                     showBluetooth -> NavRoute.BluetoothChat
                     remoteSession != null -> NavRoute.RemoteChat(remoteSession!!.first, remoteSession!!.second)
                     activeChatId != null && chats.any { it.id == activeChatId } -> NavRoute.LocalChat(activeChatId!!)
@@ -179,6 +183,22 @@ class MainActivity : ComponentActivity() {
                     label = "screen_nav"
                 ) { route ->
                     when (route) {
+                        is NavRoute.NetworkHub -> {
+                            NetworkHubScreen(
+                                routerState = routerState,
+                                onStartRouter = {
+                                    val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION)
+                                    } else {
+                                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                                    }
+                                    routerPermLauncher.launch(perms)
+                                },
+                                onStopRouter = { WifiProxyServer.stop(keepGroup = false) },
+                                onBack = { showNetworkHub = false }
+                            )
+                        }
+
                         is NavRoute.BluetoothChat -> {
                             val paired = remember(btState.status) { btManager.getPairedDevices() }
                             BluetoothChatScreen(
@@ -373,15 +393,7 @@ class MainActivity : ComponentActivity() {
                                         showBluetooth = true
                                     }
                                 },
-                                onStartRouter = {
-                                    val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION)
-                                    } else {
-                                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-                                    }
-                                    routerPermLauncher.launch(perms)
-                                },
-                                onStopRouter = { WifiProxyServer.stop(keepGroup = false) },
+                                onOpenNetworkHub = { showNetworkHub = true },
                                 onChangeLanguage = { lang ->
                                     prefs.edit().putString("lang", lang).apply()
                                     currentLang = lang
