@@ -265,8 +265,17 @@ object XrayTunnelManager {
         when (security) {
             "tls" -> {
                 val tls = JSONObject().put("serverName", effectiveSni)
-                if (effectiveInsecure) {
-                    tls.put("allowInsecure", true)
+                val pcs = q["pcs"] ?: q["pinnedPeerCertSha256"]
+                if (!pcs.isNullOrBlank()) {
+                    tls.put("pinnedPeerCertSha256", pcs)
+                }
+                val vcn = (q["vcn"] ?: q["verifyPeerCertByName"]).orEmpty().ifBlank {
+                    if (effectiveInsecure && defaultHost.isNotBlank() && !defaultHost.equals(effectiveSni, ignoreCase = true)) {
+                        defaultHost
+                    } else ""
+                }
+                if (vcn.isNotBlank()) {
+                    tls.put("verifyPeerCertByName", vcn)
                 }
                 val fp = q["fp"]
                 if (!fp.isNullOrBlank()) tls.put("fingerprint", fp)
