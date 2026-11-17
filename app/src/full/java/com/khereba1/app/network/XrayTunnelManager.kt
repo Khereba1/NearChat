@@ -43,7 +43,8 @@ data class XrayState(
 data class XrayOverrides(
     val hostOverride: String = "",
     val sniOverride: String = "",
-    val allowInsecure: Boolean = false
+    val allowInsecure: Boolean = false,
+    val allowLan: Boolean = false
 )
 
 data class XrayProfile(
@@ -232,9 +233,8 @@ object XrayTunnelManager {
                 val cfg = buildConfigJson(rawInput.trim(), overrides, listenPort = LOCAL_SOCKS_PORT)
                 Libbox.checkConfig(cfg)
                 cs.startOrReloadService(cfg, OverrideOptions())
-                if (!waitForPort(LOCAL_SOCKS_PORT, 3000L)) {
-                    val svcErr = runCatching { Libbox.readServiceError()?.value }.getOrNull().orEmpty()
-                    error(svcErr.ifBlank { lastCoreError }.ifBlank { "sing-box did not open port $LOCAL_SOCKS_PORT" })
+                if (!waitForPort(LOCAL_SOCKS_PORT, 3500L)) {
+                    error(lastCoreError.ifBlank { "sing-box did not open port $LOCAL_SOCKS_PORT" })
                 }
             }
             try {
@@ -260,7 +260,8 @@ object XrayTunnelManager {
     fun start(
         context: Context,
         rawInput: String,
-        overrides: XrayOverrides = XrayOverrides()
+        overrides: XrayOverrides = XrayOverrides(),
+        onReady: (() -> Unit)? = null
     ) {
         stop()
         val trimmed = rawInput.trim()
@@ -277,11 +278,12 @@ object XrayTunnelManager {
                 val configJson = buildConfigJson(trimmed, overrides, listenPort = LOCAL_SOCKS_PORT)
                 Libbox.checkConfig(configJson)
                 cs.startOrReloadService(configJson, OverrideOptions())
-                if (waitForPort(LOCAL_SOCKS_PORT, 3000L)) {
-                    _state.value = XrayState(true, "sing-box running (HTTP+SOCKS5) on 127.0.0.1:$LOCAL_SOCKS_PORT")
+                if (waitForPort(LOCAL_SOCKS_PORT, 3500L)) {
+                    val bindHost = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
+                    _state.value = XrayState(true, "sing-box active ($bindHost:$LOCAL_SOCKS_PORT)")
+                    onReady?.invoke()
                 } else {
-                    val svcErr = runCatching { Libbox.readServiceError()?.value }.getOrNull().orEmpty()
-                    val msg = svcErr.ifBlank { lastCoreError }.ifBlank { "Port $LOCAL_SOCKS_PORT failed to bind" }
+                    val msg = lastCoreError.ifBlank { "Port $LOCAL_SOCKS_PORT failed to bind" }
                     _state.value = XrayState(false, "Core error: $msg")
                 }
             } catch (e: Throwable) {
@@ -319,10 +321,11 @@ object XrayTunnelManager {
             else -> error("Unsupported scheme (use vless://, vmess://, trojan://, ss://, socks://, or JSON)")
         }
 
+        val listenAddr = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
         val inbound = JSONObject()
             .put("type", "mixed")
             .put("tag", "socks-in")
-            .put("listen", "127.0.0.1")
+            .put("listen", listenAddr)
             .put("listen_port", listenPort)
 
         return JSONObject()
@@ -330,6 +333,15 @@ object XrayTunnelManager {
             .put("inbounds", JSONArray().put(inbound))
             .put("outbounds", JSONArray().put(outbound))
             .toString()
+    }
+
+
+    private fun resolveHostIfPossible(host: String): String {
+        val h = host.trim()
+        if (h.isEmpty()) return h
+        return runCatching {
+            java.net.InetAddress.getByName(h).hostAddress ?: h
+        }.getOrDefault(h)
     }
 
     private fun convertOrPatchJson(
@@ -350,10 +362,11 @@ object XrayTunnelManager {
                 }
             }
             if (sbOutbounds.length() == 0) error("No supported outbound found in JSON")
+            val listenAddr = if (overrides.allowLan) "0.0.0.0" else "127.0.0.1"
             val inbound = JSONObject()
                 .put("type", "mixed")
                 .put("tag", "socks-in")
-                .put("listen", "127.0.0.1")
+                .put("listen", listenAddr)
                 .put("listen_port", listenPort)
             return JSONObject()
                 .put("log", JSONObject().put("level", "warn"))
@@ -382,7 +395,7 @@ object XrayTunnelManager {
         if (proto == "vless" || proto == "vmess") {
             val v0 = settings.optJSONArray("vnext")?.optJSONObject(0) ?: JSONObject()
             val u0 = v0.optJSONArray("users")?.optJSONObject(0) ?: JSONObject()
-            ob.put("server", v0.optString("address", ""))
+            ob.put("server", resolveHostIfPossible(v0.optString("address", "")))
             ob.put("server_port", v0.optInt("port", 443))
             ob.put("uuid", u0.optString("id", ""))
             val flow = u0.optString("flow", "")
@@ -393,7 +406,7 @@ object XrayTunnelManager {
             }
         } else if (proto == "trojan") {
             val s0 = settings.optJSONArray("servers")?.optJSONObject(0) ?: JSONObject()
-            ob.put("server", s0.optString("address", ""))
+            ob.put("server", resolveHostIfPossible(s0.optString("address", "")))
             ob.put("server_port", s0.optInt("port", 443))
             ob.put("password", s0.optString("password", ""))
         }
@@ -551,7 +564,7 @@ object XrayTunnelManager {
         val ob = JSONObject()
             .put("type", "vless")
             .put("tag", "proxy")
-            .put("server", host)
+            .put("server", resolveHostIfPossible(host))
             .put("server_port", port)
             .put("uuid", uuid)
         val flow = q["flow"]
@@ -581,7 +594,7 @@ object XrayTunnelManager {
         val ob = JSONObject()
             .put("type", "vmess")
             .put("tag", "proxy")
-            .put("server", host)
+            .put("server", resolveHostIfPossible(host))
             .put("server_port", port)
             .put("uuid", uuid)
             .put("alter_id", aid)
@@ -601,7 +614,7 @@ object XrayTunnelManager {
         val ob = JSONObject()
             .put("type", "trojan")
             .put("tag", "proxy")
-            .put("server", host)
+            .put("server", resolveHostIfPossible(host))
             .put("server_port", port)
             .put("password", pass)
         applyStreamToSingBox(ob, q, host, overrides)
@@ -634,7 +647,7 @@ object XrayTunnelManager {
         return JSONObject()
             .put("type", "shadowsocks")
             .put("tag", "proxy")
-            .put("server", host)
+            .put("server", resolveHostIfPossible(host))
             .put("server_port", port.toInt())
             .put("method", method)
             .put("password", pass)
@@ -647,7 +660,7 @@ object XrayTunnelManager {
         return JSONObject()
             .put("type", "mixed")
             .put("tag", "proxy")
-            .put("server", host)
+            .put("server", resolveHostIfPossible(host))
             .put("server_port", port)
     }
 }

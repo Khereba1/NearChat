@@ -135,4 +135,10 @@
     <string name="root_apply_proxy">تطبيق البروكسي على النظام (روت)</string>
     <string name="root_clear_proxy">إلغاء بروكسي النظام (روت)</string>
     <string name="root_ip_forward">تفعيل توجيه IP (روت)</string>
+    <string name="auto_vpn_label">وضع الـ VPN التلقائي (زي NekoBox)</string>
+    <string name="auto_vpn_desc">يشغّل الـ VPN لكل تطبيقات الموبايل تلقائيًا أول ما تضغط تشغيل. اقفله لو عايز بروكسي فقط.</string>
+    <string name="allow_lan_label">بث البروكسي للشبكة المحلية (0.0.0.0)</string>
+    <string name="preset_host_router">ضبط سريع: استقبال من راوتر جهاز تاني (192.168.49.1:1080)</string>
+    <string name="preset_local_core">ضبط سريع: النواة المحلية (127.0.0.1:10808)</string>
+    <string name="vpn_manual_hint">وضع الـ VPN اليدوي: استخدمه لما تستقبل نت من جهاز تاني مشغّل بث الراوتر.</string>
 </resources>

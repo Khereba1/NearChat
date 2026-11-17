@@ -127,6 +127,12 @@ fun NetworkHubScreen(
     var allowInsecure by remember {
         mutableStateOf(prefs.getBoolean("xray_allow_insecure", false))
     }
+    var autoStartVpn by remember {
+        mutableStateOf(prefs.getBoolean("xray_auto_vpn", true))
+    }
+    var allowLanBind by remember {
+        mutableStateOf(prefs.getBoolean("xray_allow_lan", false))
+    }
     var profileName by remember { mutableStateOf("") }
     var profiles by remember { mutableStateOf(XrayTunnelManager.loadProfiles(context)) }
     var pingResult by remember { mutableStateOf("") }
@@ -159,15 +165,29 @@ fun NetworkHubScreen(
     val currentOverrides = XrayOverrides(
         hostOverride = hostOverride,
         sniOverride = sniOverride,
-        allowInsecure = allowInsecure
+        allowInsecure = allowInsecure,
+        allowLan = allowLanBind
     )
+
+    var pendingVpnHost by remember { mutableStateOf("192.168.49.1") }
+    var pendingVpnPort by remember { mutableIntStateOf(1080) }
 
     val vpnPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { res ->
         if (res.resultCode == Activity.RESULT_OK) {
-            val portNum = clientPort.trim().toIntOrNull()?.coerceIn(1, 65535) ?: 1080
-            NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, portNum)
+            NearChatVpnService.start(context, pendingVpnHost, pendingVpnPort)
+        }
+    }
+
+    val startVpnWithTarget: (String, Int) -> Unit = { targetHost, targetPort ->
+        pendingVpnHost = targetHost.ifBlank { "192.168.49.1" }
+        pendingVpnPort = targetPort.coerceIn(1, 65535)
+        val prep = VpnService.prepare(context)
+        if (prep != null) {
+            vpnPermLauncher.launch(prep)
+        } else {
+            NearChatVpnService.start(context, pendingVpnHost, pendingVpnPort)
         }
     }
 
@@ -522,7 +542,30 @@ fun NetworkHubScreen(
                         ) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text(stringResource(R.string.vpn_client_section), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(stringResource(R.string.vpn_manual_hint), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (!isVpnRunning) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                clientHostIp = "192.168.49.1"
+                                                clientPort = "1080"
+                                                prefs.edit().putString("vpn_host_ip", clientHostIp).putString("vpn_host_port", clientPort).apply()
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(stringResource(R.string.preset_host_router), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                clientHostIp = "127.0.0.1"
+                                                clientPort = XrayTunnelManager.LOCAL_SOCKS_PORT.toString()
+                                                prefs.edit().putString("vpn_host_ip", clientHostIp).putString("vpn_host_port", clientPort).apply()
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(stringResource(R.string.preset_local_core), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                    }
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedTextField(
                                             value = clientHostIp,
@@ -571,13 +614,8 @@ fun NetworkHubScreen(
                                     Button(
                                         enabled = !routerState.isRunning,
                                         onClick = {
-                                            val prep = VpnService.prepare(context)
-                                            if (prep != null) {
-                                                vpnPermLauncher.launch(prep)
-                                            } else {
-                                                val portNum = clientPort.trim().toIntOrNull()?.coerceIn(1, 65535) ?: 1080
-                                                NearChatVpnService.start(context, clientHostIp.ifBlank { "192.168.49.1" }, portNum)
-                                            }
+                                            val portNum = clientPort.trim().toIntOrNull()?.coerceIn(1, 65535) ?: 1080
+                                            startVpnWithTarget(clientHostIp.ifBlank { "192.168.49.1" }, portNum)
                                         },
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
@@ -739,6 +777,47 @@ fun NetworkHubScreen(
                                         }
                                     )
                                 }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = stringResource(R.string.auto_vpn_label),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.auto_vpn_desc),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(
+                                        checked = autoStartVpn,
+                                        onCheckedChange = {
+                                            autoStartVpn = it
+                                            prefs.edit().putBoolean("xray_auto_vpn", it).apply()
+                                        }
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = stringResource(R.string.allow_lan_label),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Switch(
+                                        checked = allowLanBind,
+                                        onCheckedChange = {
+                                            allowLanBind = it
+                                            prefs.edit().putBoolean("xray_allow_lan", it).apply()
+                                        }
+                                    )
+                                }
                             }
                         }
 
@@ -782,10 +861,19 @@ fun NetworkHubScreen(
                             if (!xrayState.isRunning) {
                                 Button(
                                     onClick = {
-                                        XrayTunnelManager.start(context, xrayConfig, currentOverrides)
                                         val localAddr = "127.0.0.1:${XrayTunnelManager.LOCAL_SOCKS_PORT}"
                                         upstreamSocks = localAddr
                                         prefs.edit().putString("upstream_socks", localAddr).apply()
+                                        XrayTunnelManager.start(context, xrayConfig, currentOverrides) {
+                                            if (autoStartVpn && !routerState.isRunning) {
+                                                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                                    clientHostIp = "127.0.0.1"
+                                                    clientPort = XrayTunnelManager.LOCAL_SOCKS_PORT.toString()
+                                                    prefs.edit().putString("vpn_host_ip", clientHostIp).putString("vpn_host_port", clientPort).apply()
+                                                    startVpnWithTarget("127.0.0.1", XrayTunnelManager.LOCAL_SOCKS_PORT)
+                                                }
+                                            }
+                                        }
                                     },
                                     modifier = Modifier.weight(1f)
                                 ) {
@@ -795,7 +883,12 @@ fun NetworkHubScreen(
                                 }
                             } else {
                                 Button(
-                                    onClick = { XrayTunnelManager.stop() },
+                                    onClick = {
+                                        XrayTunnelManager.stop()
+                                        if (isVpnRunning && clientHostIp == "127.0.0.1") {
+                                            NearChatVpnService.stop(context)
+                                        }
+                                    },
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                                     modifier = Modifier.weight(1f)
                                 ) {

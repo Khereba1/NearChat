@@ -49,7 +49,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreVert
@@ -690,7 +690,7 @@ private fun MessageBubble(
                             if (mediaFile != null) {
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.open)) },
-                                    leadingIcon = { Icon(Icons.Rounded.InsertDriveFile, contentDescription = null) },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Rounded.InsertDriveFile, contentDescription = null) },
                                     onClick = {
                                         menuOpen = false
                                         onOpenMedia()
@@ -902,7 +902,7 @@ private fun FileCard(message: ChatMessage, onOpen: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Rounded.InsertDriveFile,
+                Icons.AutoMirrored.Rounded.InsertDriveFile,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(28.dp)

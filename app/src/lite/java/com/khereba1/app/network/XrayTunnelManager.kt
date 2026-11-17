@@ -16,7 +16,8 @@ data class XrayState(
 data class XrayOverrides(
     val hostOverride: String = "",
     val sniOverride: String = "",
-    val allowInsecure: Boolean = false
+    val allowInsecure: Boolean = false,
+    val allowLan: Boolean = false
 )
 
 data class XrayProfile(
@@ -100,7 +101,8 @@ object XrayTunnelManager {
     fun start(
         context: Context,
         rawInput: String,
-        overrides: XrayOverrides = XrayOverrides()
+        overrides: XrayOverrides = XrayOverrides(),
+        onReady: (() -> Unit)? = null
     ) {
         _state.value = XrayState(false, "Lite version: install NearChat.apk (Full) for built-in sing-box, or use Upstream SOCKS5 in Host Router.")
     }
