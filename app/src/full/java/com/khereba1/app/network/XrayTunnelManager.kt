@@ -66,6 +66,42 @@ object XrayTunnelManager {
     const val LOCAL_SOCKS_PORT = 10808
     private const val PREF_PROFILES = "xray_profiles_json"
 
+    private fun toStringIterator(items: List<String>): StringIterator = object : StringIterator {
+        private var idx = 0
+        override fun len(): Int = items.size
+        override fun hasNext(): Boolean = idx < items.size
+        override fun next(): String = items[idx++]
+    }
+
+    private fun collectBoxInterfaces(): List<io.nekohasekai.libbox.NetworkInterface> {
+        val list = mutableListOf<io.nekohasekai.libbox.NetworkInterface>()
+        runCatching {
+            val en = java.net.NetworkInterface.getNetworkInterfaces() ?: return emptyList()
+            while (en.hasMoreElements()) {
+                val ni = en.nextElement()
+                val name = ni.name ?: continue
+                if (!ni.isUp || ni.isLoopback || name.startsWith("tun") || name.startsWith("ppp")) continue
+                val addrs = ni.interfaceAddresses.mapNotNull { ia ->
+                    val a = ia.address ?: return@mapNotNull null
+                    val rawHost = a.hostAddress ?: return@mapNotNull null
+                    val cleanHost = rawHost.substringBefore('%')
+                    "$cleanHost/${ia.networkPrefixLength}"
+                }
+                if (addrs.isEmpty()) continue
+                val boxNi = io.nekohasekai.libbox.NetworkInterface().apply {
+                    index = ni.index
+                    mtu = runCatching { ni.mtu }.getOrDefault(1500).let { if (it > 0) it else 1500 }
+                    this.name = name
+                    flags = 1 or 2 or 16 // FlagUp | FlagRunning | FlagMulticast
+                    addresses = toStringIterator(addrs)
+                    dnsServer = toStringIterator(listOf("8.8.8.8", "1.1.1.1"))
+                }
+                list.add(boxNi)
+            }
+        }
+        return list
+    }
+
     private val platformImpl = object : PlatformInterface {
         override fun localDNSTransport(): LocalDNSTransport? = null
         override fun usePlatformAutoDetectInterfaceControl(): Boolean = false
@@ -79,20 +115,28 @@ object XrayTunnelManager {
             destinationAddress: String?,
             destinationPort: Int
         ): ConnectionOwner = ConnectionOwner()
-        override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
+        override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {
+            if (listener == null) return
+            val first = collectBoxInterfaces().firstOrNull()
+            if (first != null) {
+                runCatching { listener.updateDefaultInterface(first.name, first.index, false, false) }
+            } else {
+                runCatching { listener.updateDefaultInterface("wlan0", 1, false, false) }
+            }
+        }
         override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) {}
-        override fun getInterfaces(): NetworkInterfaceIterator = object : NetworkInterfaceIterator {
-            override fun hasNext(): Boolean = false
-            override fun next(): io.nekohasekai.libbox.NetworkInterface? = null
+        override fun getInterfaces(): NetworkInterfaceIterator {
+            val items = collectBoxInterfaces()
+            var idx = 0
+            return object : NetworkInterfaceIterator {
+                override fun hasNext(): Boolean = idx < items.size
+                override fun next(): io.nekohasekai.libbox.NetworkInterface = items[idx++]
+            }
         }
         override fun underNetworkExtension(): Boolean = false
         override fun includeAllNetworks(): Boolean = false
         override fun readWIFIState(): WIFIState = Libbox.newWIFIState("", "")
-        override fun systemCertificates(): StringIterator = object : StringIterator {
-            override fun len(): Int = 0
-            override fun hasNext(): Boolean = false
-            override fun next(): String = ""
-        }
+        override fun systemCertificates(): StringIterator = toStringIterator(emptyList())
         override fun clearDNSCache() {}
         override fun sendNotification(notification: Notification?) {}
     }
