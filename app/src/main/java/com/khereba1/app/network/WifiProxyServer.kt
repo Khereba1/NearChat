@@ -296,6 +296,22 @@ object WifiProxyServer {
         _state.value = RouterBridgeState(isRunning = false)
     }
 
+
+    @SuppressLint("MissingPermission")
+    fun resetP2pGroup(context: Context) {
+        try {
+            val mgr = p2pManager
+                ?: (context.applicationContext.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager)
+            val ch = p2pChannel ?: mgr?.initialize(context.applicationContext, Looper.getMainLooper(), null)
+            if (mgr != null && ch != null) {
+                mgr.removeGroup(ch, null)
+            }
+        } catch (_: Throwable) {
+        }
+        p2pChannel = null
+        _state.value = _state.value.copy(p2pSsid = "", p2pPass = "")
+    }
+
     private fun tuneSocket(s: Socket) {
         try {
             s.soTimeout = 120_000

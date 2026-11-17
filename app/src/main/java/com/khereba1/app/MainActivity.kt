@@ -194,7 +194,11 @@ class MainActivity : ComponentActivity() {
                                     }
                                     routerPermLauncher.launch(perms)
                                 },
-                                onStopRouter = { WifiProxyServer.stop(keepGroup = false) },
+                                onStopRouter = {
+                                    val keep = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q &&
+                                        getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("keep_wifi_group", false)
+                                    WifiProxyServer.stop(keepGroup = keep)
+                                },
                                 onBack = { showNetworkHub = false }
                             )
                         }

@@ -123,4 +123,16 @@
     <string name="status_off">مقفول</string>
     <string name="paste_label">لصق</string>
     <string name="clear_label">مسح</string>
+    <string name="keep_wifi_group_label">الاحتفاظ بشبكة البث عند الإيقاف (للأجهزة القديمة)</string>
+    <string name="keep_wifi_group_desc">يحافظ على نفس كلمة سر Wi-Fi Direct على أندرويد 7 و8 و9 عند إيقاف البث.</string>
+    <string name="qr_wifi_title">امسح للاتصال بالواي فاي فورًا</string>
+    <string name="copy_quick_setup">نسخ الإعداد السريع</string>
+    <string name="paste_quick_setup">لصق الإعداد السريع</string>
+    <string name="root_detected">تم اكتشاف روت (su متاح)</string>
+    <string name="root_not_detected">الوضع العادي (بدون روت)</string>
+    <string name="root_verify">تفعيل صلاحية الروت</string>
+    <string name="root_verified">صلاحية الروت مفعّلة</string>
+    <string name="root_apply_proxy">تطبيق البروكسي على النظام (روت)</string>
+    <string name="root_clear_proxy">إلغاء بروكسي النظام (روت)</string>
+    <string name="root_ip_forward">تفعيل توجيه IP (روت)</string>
 </resources>

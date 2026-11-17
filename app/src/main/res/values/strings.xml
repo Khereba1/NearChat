@@ -127,4 +127,16 @@
     <string name="status_off">Off</string>
     <string name="paste_label">Paste</string>
     <string name="clear_label">Clear</string>
+    <string name="keep_wifi_group_label">Keep Wi-Fi Group on Stop (Legacy Android)</string>
+    <string name="keep_wifi_group_desc">Keeps the same Wi-Fi Direct password on Android 7/8/9 when stopping Router.</string>
+    <string name="qr_wifi_title">Scan to Connect Wi-Fi</string>
+    <string name="copy_quick_setup">Copy Quick Setup</string>
+    <string name="paste_quick_setup">Paste Quick Setup</string>
+    <string name="root_detected">Root Detected (su available)</string>
+    <string name="root_not_detected">Standard Mode (No Root)</string>
+    <string name="root_verify">Verify Root Access</string>
+    <string name="root_verified">Root Access Granted</string>
+    <string name="root_apply_proxy">Apply System Proxy (Root)</string>
+    <string name="root_clear_proxy">Clear System Proxy (Root)</string>
+    <string name="root_ip_forward">Enable IP Forwarding (Root)</string>
 </resources>

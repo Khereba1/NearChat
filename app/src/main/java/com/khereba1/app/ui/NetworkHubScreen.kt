@@ -12,6 +12,8 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -63,6 +65,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -71,6 +74,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -82,6 +86,9 @@ import com.khereba1.app.PREFS
 import com.khereba1.app.R
 import com.khereba1.app.network.NearChatVpnService
 import com.khereba1.app.network.NetworkUtils
+import com.khereba1.app.network.QrGenerator
+import com.khereba1.app.network.RootHelper
+import com.khereba1.app.network.RootStatus
 import com.khereba1.app.network.RouterBridgeState
 import com.khereba1.app.network.VoiceCallManager
 import com.khereba1.app.network.WifiProxyServer
@@ -132,6 +139,15 @@ fun NetworkHubScreen(
     }
     var peerCallIp by remember {
         mutableStateOf(prefs.getString("call_peer_ip", "192.168.49.1") ?: "192.168.49.1")
+    }
+
+    var keepWifiGroup by remember {
+        mutableStateOf(prefs.getBoolean("keep_wifi_group", false))
+    }
+    var rootStatus by remember { mutableStateOf(RootStatus()) }
+    var rootActionMsg by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        rootStatus = RootHelper.checkRoot()
     }
 
     val isVpnRunning by NearChatVpnService.isRunning.collectAsState()
@@ -277,6 +293,86 @@ fun NetworkHubScreen(
                                         Text(stringResource(R.string.open_hotspot_settings))
                                     }
                                 }
+                                // Root status row
+                                if (rootStatus.checked) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = stringResource(
+                                                if (rootStatus.rootGranted) R.string.root_verified
+                                                else if (rootStatus.hasSuBinary) R.string.root_detected
+                                                else R.string.root_not_detected
+                                            ),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (rootStatus.hasSuBinary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (rootStatus.hasSuBinary && !rootStatus.rootGranted) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        rootStatus = RootHelper.requestRootAccess()
+                                                        rootActionMsg = rootStatus.detail
+                                                    }
+                                                }
+                                            ) {
+                                                Text(stringResource(R.string.root_verify), style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                    if (rootStatus.rootGranted) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                scope.launch {
+                                                    RootHelper.enableIpForwarding()
+                                                        .onSuccess { rootActionMsg = "IP Forwarding: $it" }
+                                                        .onFailure { rootActionMsg = "Root error: ${it.message}" }
+                                                }
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(stringResource(R.string.root_ip_forward))
+                                        }
+                                    }
+                                    if (rootActionMsg.isNotEmpty()) {
+                                        Text(rootActionMsg, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                            }
+                        }
+
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                tonalElevation = 1.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(stringResource(R.string.keep_wifi_group_label), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                            Text(stringResource(R.string.keep_wifi_group_desc), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        Switch(
+                                            checked = keepWifiGroup,
+                                            onCheckedChange = {
+                                                keepWifiGroup = it
+                                                prefs.edit().putBoolean("keep_wifi_group", it).apply()
+                                            }
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            WifiProxyServer.resetP2pGroup(context)
+                                            Toast.makeText(context, context.getString(R.string.router_reset_group), Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(stringResource(R.string.router_reset_group))
+                                    }
+                                }
                             }
                         }
 
@@ -357,19 +453,49 @@ fun NetworkHubScreen(
                                 }
                             }
                             if (routerState.p2pSsid.isNotEmpty()) {
+                                val wifiQrContent = "WIFI:T:WPA;S:${routerState.p2pSsid};P:${routerState.p2pPass};;"
+                                val wifiQrBitmap = remember(wifiQrContent) { QrGenerator.generate(wifiQrContent, 420) }
+                                val quickSetupUri = "nearchat://connect?host=${routerState.proxyHost}&port=${routerState.socksPort}"
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(stringResource(R.string.router_p2p_label), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                            Text("SSID: ${routerState.p2pSsid}", fontWeight = FontWeight.Medium)
-                                            Text("Pass: ${routerState.p2pPass}", fontWeight = FontWeight.Medium)
+                                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(stringResource(R.string.router_p2p_label), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                                Text("SSID: ${routerState.p2pSsid}", fontWeight = FontWeight.Medium)
+                                                Text("Pass: ${routerState.p2pPass}", fontWeight = FontWeight.Medium)
+                                            }
+                                            IconButton(onClick = { copyToClipboard(context, routerState.p2pPass) }) {
+                                                Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            }
                                         }
-                                        IconButton(onClick = { copyToClipboard(context, routerState.p2pPass) }) {
-                                            Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        if (wifiQrBitmap != null) {
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(stringResource(R.string.qr_wifi_title), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                                Spacer(Modifier.height(6.dp))
+                                                Image(
+                                                    bitmap = wifiQrBitmap,
+                                                    contentDescription = stringResource(R.string.qr_wifi_title),
+                                                    modifier = Modifier
+                                                        .size(170.dp)
+                                                        .background(Color.White, RoundedCornerShape(12.dp))
+                                                        .padding(8.dp)
+                                                )
+                                            }
+                                        }
+                                        OutlinedButton(
+                                            onClick = { copyToClipboard(context, quickSetupUri) },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(stringResource(R.string.copy_quick_setup))
                                         }
                                     }
                                 }
@@ -419,6 +545,29 @@ fun NetworkHubScreen(
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            val clip = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim().orEmpty()
+                                            if (clip.startsWith("nearchat://")) {
+                                                val hostMatch = Regex("host=([^&]+)").find(clip)?.groupValues?.get(1)
+                                                val portMatch = Regex("port=([0-9]+)").find(clip)?.groupValues?.get(1)
+                                                if (!hostMatch.isNullOrBlank()) {
+                                                    clientHostIp = hostMatch
+                                                    prefs.edit().putString("vpn_host_ip", hostMatch).apply()
+                                                }
+                                                if (!portMatch.isNullOrBlank()) {
+                                                    clientPort = portMatch
+                                                    prefs.edit().putString("vpn_host_port", portMatch).apply()
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Icon(Icons.Rounded.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(stringResource(R.string.paste_quick_setup))
+                                    }
                                     Button(
                                         enabled = !routerState.isRunning,
                                         onClick = {
@@ -435,6 +584,48 @@ fun NetworkHubScreen(
                                         Icon(Icons.Rounded.VpnKey, contentDescription = null)
                                         Spacer(Modifier.width(6.dp))
                                         Text(stringResource(R.string.vpn_connect))
+                                    }
+                                    if (rootStatus.hasSuBinary) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        if (!rootStatus.rootGranted) {
+                                                            rootStatus = RootHelper.requestRootAccess()
+                                                        }
+                                                        if (rootStatus.rootGranted) {
+                                                            val httpPort = 8899
+                                                            RootHelper.applyGlobalHttpProxy(clientHostIp.ifBlank { "192.168.49.1" }, httpPort)
+                                                                .onSuccess { rootActionMsg = "System HTTP Proxy: $clientHostIp:$httpPort" }
+                                                                .onFailure { rootActionMsg = "Root error: ${it.message}" }
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text(stringResource(R.string.root_apply_proxy), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
+                                                    scope.launch {
+                                                        if (!rootStatus.rootGranted) {
+                                                            rootStatus = RootHelper.requestRootAccess()
+                                                        }
+                                                        if (rootStatus.rootGranted) {
+                                                            RootHelper.clearGlobalHttpProxy()
+                                                                .onSuccess { rootActionMsg = "System HTTP Proxy cleared" }
+                                                                .onFailure { rootActionMsg = "Root error: ${it.message}" }
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text(stringResource(R.string.root_clear_proxy), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            }
+                                        }
+                                        if (rootActionMsg.isNotEmpty()) {
+                                            Text(rootActionMsg, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                        }
                                     }
                                 } else {
                                     Button(
