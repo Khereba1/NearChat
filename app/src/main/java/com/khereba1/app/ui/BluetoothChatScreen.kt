@@ -102,7 +102,7 @@ fun BluetoothChatScreen(
                         val subtitle = when (btState.status) {
                             BtConnectionStatus.CONNECTED -> stringResource(R.string.bt_connected, btState.peerName)
                             BtConnectionStatus.HOSTING, BtConnectionStatus.CONNECTING -> stringResource(R.string.bt_waiting)
-                            else -> "Bluetooth RFCOMM"
+                            else -> stringResource(R.string.bluetooth_rfcomm)
                         }
                         Text(
                             text = subtitle,
@@ -127,7 +127,8 @@ fun BluetoothChatScreen(
             if (btState.status == BtConnectionStatus.CONNECTED) {
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 4.dp,
+                    tonalElevation = 2.dp,
+                    shadowElevation = 8.dp,
                     modifier = Modifier.navigationBarsPadding().imePadding()
                 ) {
                     Row(
@@ -140,7 +141,7 @@ fun BluetoothChatScreen(
                             value = input,
                             onValueChange = { input = it },
                             placeholder = { Text(stringResource(R.string.message_hint)) },
-                            shape = RoundedCornerShape(24.dp),
+                            shape = RoundedCornerShape(22.dp),
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(Modifier.width(8.dp))
@@ -174,13 +175,13 @@ fun BluetoothChatScreen(
         ) {
             if (btState.status != BtConnectionStatus.CONNECTED) {
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(22.dp),
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
@@ -273,9 +274,10 @@ fun BluetoothChatScreen(
                             ),
                             color = if (m.isMine) MaterialTheme.colorScheme.primaryContainer
                             else MaterialTheme.colorScheme.surface,
-                            modifier = Modifier.widthIn(max = 290.dp)
+                            tonalElevation = if (m.isMine) 1.dp else 0.dp,
+                            modifier = Modifier.widthIn(max = 300.dp)
                         ) {
-                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                                 Text(
                                     text = m.text,
                                     style = MaterialTheme.typography.bodyLarge

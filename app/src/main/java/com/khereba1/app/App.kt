@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.util.Log
 import com.khereba1.app.network.HotspotAutoVpnManager
+import com.khereba1.app.network.LanShareService
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -19,6 +20,10 @@ class App : Application() {
         super.onCreate()
         AppLog.init(this)
         HotspotAutoVpnManager.init(this)
+        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean("auto_vpn_on_hotspot", false) && prefs.getBoolean("auto_vpn_bg_watcher", false)) {
+            runCatching { LanShareService.startWatcher(this) }
+        }
     }
 }
 

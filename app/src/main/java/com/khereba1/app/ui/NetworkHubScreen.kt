@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import com.khereba1.app.PREFS
 import com.khereba1.app.R
 import com.khereba1.app.network.HotspotAutoVpnManager
+import com.khereba1.app.network.LanShareService
 import com.khereba1.app.network.NearChatVpnService
 import com.khereba1.app.network.StreamerKeepAlive
 import com.khereba1.app.network.QrGenerator
@@ -129,6 +130,9 @@ fun NetworkHubScreen(
     }
     var autoVpnOnHotspot by remember {
         mutableStateOf(prefs.getBoolean("auto_vpn_on_hotspot", false))
+    }
+    var autoVpnBgWatcher by remember {
+        mutableStateOf(prefs.getBoolean("auto_vpn_bg_watcher", false))
     }
     var streamerWakeLock by remember {
         mutableStateOf(prefs.getBoolean("streamer_wakelock", false))
@@ -256,7 +260,11 @@ fun NetworkHubScreen(
                 )
             }
 
-            TabRow(selectedTabIndex = selectedTab) {
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary
+            ) {
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
@@ -281,13 +289,13 @@ fun NetworkHubScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = 16.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 when (selectedTab) {
                     0 -> {
                         Surface(
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(20.dp),
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -363,7 +371,7 @@ fun NetworkHubScreen(
 
                         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
+                                shape = RoundedCornerShape(20.dp),
                                 tonalElevation = 1.dp,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -396,7 +404,7 @@ fun NetworkHubScreen(
 
                         if (!routerState.isRunning) {
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
+                                shape = RoundedCornerShape(20.dp),
                                 tonalElevation = 2.dp,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -445,7 +453,7 @@ fun NetworkHubScreen(
                             val httpAddr = "${routerState.proxyHost}:${routerState.proxyPort}"
                             val socksAddr = "${routerState.proxyHost}:${routerState.socksPort}"
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
+                                shape = RoundedCornerShape(20.dp),
                                 color = MaterialTheme.colorScheme.surfaceVariant,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -475,7 +483,7 @@ fun NetworkHubScreen(
                                 val wifiQrBitmap = remember(wifiQrContent) { QrGenerator.generate(wifiQrContent, 420) }
                                 val quickSetupUri = "nearchat://connect?host=${routerState.proxyHost}&port=${routerState.socksPort}"
                                 Surface(
-                                    shape = RoundedCornerShape(16.dp),
+                                    shape = RoundedCornerShape(20.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
@@ -484,7 +492,7 @@ fun NetworkHubScreen(
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(stringResource(R.string.router_p2p_label), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                                 Text("SSID: ${routerState.p2pSsid}", fontWeight = FontWeight.Medium)
-                                                Text("Pass: ${routerState.p2pPass}", fontWeight = FontWeight.Medium)
+                                                Text("${stringResource(R.string.password_label)}: ${routerState.p2pPass}", fontWeight = FontWeight.Medium)
                                             }
                                             IconButton(onClick = { copyToClipboard(context, routerState.p2pPass) }) {
                                                 Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -534,7 +542,7 @@ fun NetworkHubScreen(
 
                     1 -> {
                         Surface(
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(20.dp),
                             tonalElevation = 2.dp,
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -574,9 +582,51 @@ fun NetworkHubScreen(
                                                     } else {
                                                         HotspotAutoVpnManager.triggerCheckNow(context)
                                                     }
+                                                    if (autoVpnBgWatcher) {
+                                                        runCatching { LanShareService.startWatcher(context) }
+                                                    }
+                                                } else {
+                                                    runCatching { LanShareService.stopWatcher(context) }
                                                 }
                                             }
                                         )
+                                    }
+                                }
+                                if (autoVpnOnHotspot) {
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "مراقبة دائمة في الخلفية (إشعار صامت اختياري)",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                                Text(
+                                                    text = "يبقي المراقب نشطاً باستهلاك شبه معدوم حتى لو أغلقت التطبيق من الخلفية",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                            Switch(
+                                                checked = autoVpnBgWatcher,
+                                                onCheckedChange = { enabled ->
+                                                    autoVpnBgWatcher = enabled
+                                                    prefs.edit().putBoolean("auto_vpn_bg_watcher", enabled).apply()
+                                                    if (enabled && autoVpnOnHotspot) {
+                                                        runCatching { LanShareService.startWatcher(context) }
+                                                    } else {
+                                                        runCatching { LanShareService.stopWatcher(context) }
+                                                    }
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                                 if (!isVpnRunning) {
@@ -718,7 +768,7 @@ fun NetworkHubScreen(
 
                     2 -> {
                         Surface(
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(20.dp),
                             tonalElevation = 2.dp,
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -763,7 +813,7 @@ fun NetworkHubScreen(
                         }
 
                         Surface(
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(20.dp),
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
                             modifier = Modifier.fillMaxWidth()
                         ) {

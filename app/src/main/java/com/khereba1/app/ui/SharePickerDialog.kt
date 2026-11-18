@@ -42,6 +42,7 @@ fun SharePickerDialog(
     onDismiss: () -> Unit
 ) {
     var newTitle by remember { mutableStateOf("") }
+    val defaultSavedTitle = stringResource(R.string.saved_chat_default)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -83,7 +84,7 @@ fun SharePickerDialog(
                         modifier = Modifier.weight(1f)
                     )
                     Button(
-                        onClick = { onCreateNewAndSave(newTitle.ifBlank { "Saved" }) }
+                        onClick = { onCreateNewAndSave(newTitle.ifBlank { defaultSavedTitle }) }
                     ) {
                         Icon(Icons.Rounded.Add, contentDescription = null)
                     }

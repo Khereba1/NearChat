@@ -82,6 +82,8 @@ fun HomeScreen(
     routerState: RouterBridgeState,
     storageBytes: Long,
     currentLang: String,
+    themeMode: String,
+    onChangeTheme: (String) -> Unit,
     onOpenChat: (ChatRoom) -> Unit,
     onCreateChat: (String, String, Int) -> Unit,
     onRenameChat: (String, String) -> Unit,
@@ -96,6 +98,7 @@ fun HomeScreen(
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var actionsExpanded by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ChatRoom?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatRoom?>(null) }
 
@@ -148,9 +151,6 @@ fun HomeScreen(
                             contentDescription = null
                         )
                     }
-                    IconButton(onClick = onOpenBluetoothChat) {
-                        Icon(Icons.Rounded.Bluetooth, contentDescription = stringResource(R.string.bt_chat_title))
-                    }
                     IconButton(onClick = onOpenNetworkHub) {
                         Icon(
                             Icons.Rounded.Router,
@@ -159,15 +159,46 @@ fun HomeScreen(
                             else MaterialTheme.colorScheme.onSurface
                         )
                     }
-                    IconButton(onClick = { showJoinDialog = true }) {
-                        Icon(Icons.Rounded.Link, contentDescription = stringResource(R.string.join_lan_chat))
-                    }
-                    IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(Icons.Rounded.Settings, contentDescription = stringResource(R.string.settings_title))
+                    Box {
+                        IconButton(onClick = { actionsExpanded = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.settings_title))
+                        }
+                        DropdownMenu(
+                            expanded = actionsExpanded,
+                            onDismissRequest = { actionsExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.bt_chat_title)) },
+                                leadingIcon = { Icon(Icons.Rounded.Bluetooth, contentDescription = null) },
+                                onClick = { actionsExpanded = false; onOpenBluetoothChat() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.router_title)) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Rounded.Router,
+                                        contentDescription = null,
+                                        tint = if (routerState.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                onClick = { actionsExpanded = false; onOpenNetworkHub() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.join_lan_chat)) },
+                                leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
+                                onClick = { actionsExpanded = false; showJoinDialog = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.settings_title)) },
+                                leadingIcon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
+                                onClick = { actionsExpanded = false; showSettingsDialog = true }
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.background
                 )
             )
         },
@@ -215,7 +246,7 @@ fun HomeScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
-                    .background(MaterialTheme.colorScheme.surface)
+                    .background(MaterialTheme.colorScheme.background)
             ) {
                 items(filtered, key = { it.id }) { room ->
                     ChatRowItem(
@@ -300,6 +331,8 @@ fun HomeScreen(
         SettingsDialog(
             storageBytes = storageBytes,
             currentLang = currentLang,
+            themeMode = themeMode,
+            onChangeTheme = onChangeTheme,
             onChangeLanguage = onChangeLanguage,
             onDismiss = { showSettingsDialog = false }
         )
@@ -324,12 +357,12 @@ private fun ChatRowItem(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 11.dp),
+            .padding(horizontal = 18.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(46.dp)
                 .clip(CircleShape)
                 .background(accent),
             contentAlignment = Alignment.Center
@@ -435,6 +468,7 @@ fun CreateChatDialog(
     var title by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
     var selectedColor by remember { mutableIntStateOf(0) }
+    val defaultChatTitle = stringResource(R.string.new_chat_default)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -482,7 +516,7 @@ fun CreateChatDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onCreate(title.ifBlank { "New Chat" }, desc, selectedColor) }
+                onClick = { onCreate(title.ifBlank { defaultChatTitle }, desc, selectedColor) }
             ) { Text(stringResource(R.string.create)) }
         },
         dismissButton = {
@@ -498,7 +532,8 @@ private fun JoinLanDialog(
 ) {
     var urlOrLink by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
-    var displayName by remember { mutableStateOf("Guest") }
+    var displayName by remember { mutableStateOf("") }
+    val defaultGuestName = stringResource(R.string.guest_name_default)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -537,7 +572,7 @@ private fun JoinLanDialog(
         confirmButton = {
             Button(
                 enabled = urlOrLink.isNotBlank(),
-                onClick = { onConnect(urlOrLink, code, displayName.ifBlank { "Guest" }) }
+                onClick = { onConnect(urlOrLink, code, displayName.ifBlank { defaultGuestName }) }
             ) { Text(stringResource(R.string.connect)) }
         },
         dismissButton = {
@@ -550,6 +585,8 @@ private fun JoinLanDialog(
 private fun SettingsDialog(
     storageBytes: Long,
     currentLang: String,
+    themeMode: String,
+    onChangeTheme: (String) -> Unit,
     onChangeLanguage: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -574,6 +611,24 @@ private fun SettingsDialog(
                     text = "${stringResource(R.string.storage_used)}: $mbText",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                Text(
+                    text = stringResource(R.string.theme_label),
+                    fontWeight = FontWeight.SemiBold
+                )
+                val themes = listOf(
+                    "system" to stringResource(R.string.theme_system),
+                    "light" to stringResource(R.string.theme_light),
+                    "dark" to stringResource(R.string.theme_dark)
+                )
+                themes.forEach { (mode, label) ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().clickable { onChangeTheme(mode) }
+                    ) {
+                        RadioButton(selected = themeMode == mode, onClick = { onChangeTheme(mode) })
+                        Text(label)
+                    }
+                }
                 Text(
                     text = stringResource(R.string.language_label),
                     fontWeight = FontWeight.SemiBold

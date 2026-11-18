@@ -264,7 +264,7 @@ fun RouterBridgeDialog(
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text("SSID: ${state.p2pSsid}")
-                                    Text("Pass: ${state.p2pPass}")
+                                    Text("${stringResource(R.string.password_label)}: ${state.p2pPass}")
                                 }
                                 IconButton(onClick = { copyToClipboard(context, state.p2pPass) }) {
                                     Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))

@@ -82,7 +82,9 @@ class MainActivity : ComponentActivity() {
         val btManager = BluetoothChatManager(this)
 
         setContent {
-            NearChatTheme {
+            val prefs = remember { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+            var themeMode by remember { mutableStateOf(prefs.getString("theme", "system") ?: "system") }
+            NearChatTheme(themeMode = themeMode) {
                 val scope = rememberCoroutineScope()
                 val dbVersion by db.changes.collectAsState()
                 val lanState by LanShareService.state.collectAsState()
@@ -105,7 +107,6 @@ class MainActivity : ComponentActivity() {
                 var showNetworkHub by remember { mutableStateOf(false) }
                 var isRecording by remember { mutableStateOf(false) }
 
-                val prefs = remember { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
                 var currentLang by remember { mutableStateOf(prefs.getString("lang", "system") ?: "system") }
 
                 val micLauncher = rememberLauncherForActivityResult(
@@ -339,6 +340,11 @@ class MainActivity : ComponentActivity() {
                                 routerState = routerState,
                                 storageBytes = storageBytes,
                                 currentLang = currentLang,
+                                themeMode = themeMode,
+                                onChangeTheme = { mode ->
+                                    prefs.edit().putString("theme", mode).apply()
+                                    themeMode = mode
+                                },
                                 onOpenChat = { room -> activeChatId = room.id },
                                 onCreateChat = { title, desc, colorIdx ->
                                     scope.launch {

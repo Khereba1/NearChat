@@ -141,4 +141,15 @@
     <string name="preset_host_router">ضبط سريع: استقبال من راوتر جهاز تاني (192.168.49.1:1080)</string>
     <string name="preset_local_core">ضبط سريع: النواة المحلية (127.0.0.1:10808)</string>
     <string name="vpn_manual_hint">وضع الـ VPN اليدوي: استخدمه لما تستقبل نت من جهاز تاني مشغّل بث الراوتر.</string>
+    <string name="theme_label">المظهر</string>
+    <string name="theme_system">حسب النظام</string>
+    <string name="theme_light">فاتح</string>
+    <string name="theme_dark">داكن</string>
+    <string name="saved_chat_default">محفوظات</string>
+    <string name="new_chat_default">محادثة جديدة</string>
+    <string name="guest_name_default">ضيف</string>
+    <string name="bluetooth_rfcomm">Bluetooth RFCOMM</string>
+    <string name="qr_code_description">رمز QR</string>
+    <string name="password_label">كلمة المرور</string>
+    <string name="code_label">الرمز</string>
 </resources>

@@ -244,7 +244,8 @@ fun ChatScreen(
         bottomBar = {
             Surface(
                 color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
+                tonalElevation = 2.dp,
+                shadowElevation = 8.dp,
                 modifier = Modifier.navigationBarsPadding().imePadding()
             ) {
                 Column {
@@ -285,7 +286,7 @@ fun ChatScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = onPickAttachments) {
@@ -337,10 +338,12 @@ fun ChatScreen(
                                 onValueChange = { input = it },
                                 placeholder = { Text(stringResource(R.string.message_hint)) },
                                 maxLines = 4,
-                                shape = RoundedCornerShape(24.dp),
+                                shape = RoundedCornerShape(22.dp),
                                 colors = OutlinedTextFieldDefaults.colors(
-                                    unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    focusedBorderColor = MaterialTheme.colorScheme.primary
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.48f),
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.62f),
+                                    unfocusedBorderColor = Color.Transparent,
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
                                 ),
                                 modifier = Modifier.weight(1f)
                             )
@@ -629,11 +632,11 @@ private fun MessageBubble(
             ),
             color = if (isMine) MaterialTheme.colorScheme.primaryContainer
             else MaterialTheme.colorScheme.surface,
-            tonalElevation = 2.dp,
-            shadowElevation = 1.dp,
+            tonalElevation = if (isMine) 1.dp else 0.dp,
+            shadowElevation = if (isMine) 1.dp else 0.dp,
             modifier = Modifier.widthIn(min = 120.dp, max = 310.dp)
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1003,7 +1006,7 @@ private fun LanShareDialog(
                             ) {
                                 Image(
                                     bitmap = qrBitmap,
-                                    contentDescription = "QR Code",
+                                    contentDescription = stringResource(R.string.qr_code_description),
                                     modifier = Modifier
                                         .size(190.dp)
                                         .padding(10.dp)
@@ -1026,7 +1029,7 @@ private fun LanShareDialog(
                                 Spacer(Modifier.height(4.dp))
                                 Text(activeLink, style = MaterialTheme.typography.bodySmall)
                                 Text(
-                                    text = "Code: $activeCode",
+                                    text = "${stringResource(R.string.code_label)}: $activeCode",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary
                                 )
