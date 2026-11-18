@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -220,12 +221,16 @@ class MainActivity : ComponentActivity() {
                 fun launchQuickShare(share: PendingShare? = null) {
                     scope.launch {
                         val room = withContext(Dispatchers.IO) {
-                            val r = db.createChat(
+                            val existingTemp = db.getAllChats().firstOrNull { it.isTemporary }
+                            val r = existingTemp ?: db.createChat(
                                 title = getString(R.string.quick_share_title),
                                 colorIndex = 0,
                                 isTemporary = true,
                                 isLanShared = true
                             )
+                            if (!r.isLanShared) {
+                                db.updateLanSharing(r.id, true)
+                            }
                             if (share != null) {
                                 savePendingShare(db, r.id, share)
                             }
@@ -240,6 +245,8 @@ class MainActivity : ComponentActivity() {
                             }
                             routerPermLauncher.launch(perms)
                         }
+                        showNetworkHub = false
+                        showBluetooth = false
                         activeChatId = room.id
                     }
                 }
@@ -273,6 +280,32 @@ class MainActivity : ComponentActivity() {
                     else -> NavRoute.Home
                 }
 
+                BackHandler(
+                    enabled = currentRoute != NavRoute.Home ||
+                        showAttachSheet ||
+                        forwardRequest != null ||
+                        pendingShareState.value != null
+                ) {
+                    when {
+                        showAttachSheet -> showAttachSheet = false
+                        forwardRequest != null -> forwardRequest = null
+                        pendingShareState.value != null -> pendingShareState.value = null
+                        showNetworkHub -> showNetworkHub = false
+                        showBluetooth -> {
+                            btManager.disconnect()
+                            showBluetooth = false
+                        }
+                        activeChatId != null -> {
+                            if (isRecording) {
+                                recorder.cancel()
+                                isRecording = false
+                            }
+                            AudioPlayerManager.stop()
+                            activeChatId = null
+                        }
+                    }
+                }
+
                 AnimatedContent(
                     targetState = currentRoute,
                     transitionSpec = {
@@ -301,7 +334,9 @@ class MainActivity : ComponentActivity() {
                                 onStopRouter = {
                                     val keep = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
                                         getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("keep_wifi_group", false)
-                                    WifiProxyServer.stop(keepGroup = keep)
+                                    scope.launch(Dispatchers.IO) {
+                                        runCatching { WifiProxyServer.stop(keepGroup = keep) }
+                                    }
                                 },
                                 onBack = { showNetworkHub = false }
                             )
@@ -324,7 +359,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         is NavRoute.CloudChat -> {
-                            val cloudRoom = chats.first { it.id == route.chatId }
+                            val cloudRoom = chats.firstOrNull { it.id == route.chatId } ?: return@AnimatedContent
                             var cachedMessages by remember(cloudRoom.id) { mutableStateOf<List<ChatMessage>>(emptyList()) }
                             LaunchedEffect(dbVersion, cloudRoom.id) {
                                 cachedMessages = withContext(Dispatchers.IO) { db.getMessages(cloudRoom.id) }
@@ -355,7 +390,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         is NavRoute.LocalChat -> {
-                            val activeRoom: ChatRoom = chats.first { it.id == route.chatId }
+                            val activeRoom: ChatRoom = chats.firstOrNull { it.id == route.chatId } ?: return@AnimatedContent
                             var messages by remember(activeRoom.id) { mutableStateOf<List<ChatMessage>>(emptyList()) }
                             LaunchedEffect(dbVersion, activeRoom.id) {
                                 messages = withContext(Dispatchers.IO) {
@@ -458,16 +493,22 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onEndQuickShare = {
+                                    val roomIdToDelete = activeRoom.id
                                     val keep = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
                                         prefs.getBoolean("keep_wifi_group", false)
-                                    WifiProxyServer.stop(keepGroup = keep)
+                                    if (isRecording) {
+                                        recorder.cancel()
+                                        isRecording = false
+                                    }
+                                    AudioPlayerManager.stop()
                                     activeChatId = null
                                     scope.launch(Dispatchers.IO) {
-                                        db.deleteChat(activeRoom.id)
+                                        runCatching { WifiProxyServer.stop(keepGroup = keep) }
+                                        runCatching { db.deleteChat(roomIdToDelete) }
                                         val count = db.getSharedChatsCount()
                                         if (count == 0) {
                                             withContext(Dispatchers.Main) {
-                                                LanShareService.stop(this@MainActivity)
+                                                runCatching { LanShareService.stop(this@MainActivity) }
                                             }
                                         }
                                     }
@@ -578,7 +619,24 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                pendingShareState.value?.let { share ->
+                val incomingShare = pendingShareState.value
+                LaunchedEffect(incomingShare, chats) {
+                    if (incomingShare != null) {
+                        val activeTemp = chats.firstOrNull { it.isTemporary }
+                        if (activeTemp != null) {
+                            pendingShareState.value = null
+                            launchQuickShare(incomingShare)
+                            Toast.makeText(
+                                this@MainActivity,
+                                getString(R.string.saved_to_chat, activeTemp.title),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+
+                if (incomingShare != null && chats.none { it.isTemporary }) {
+                    val share = incomingShare
                     SharePickerDialog(
                         chats = chats.filter { !it.isTemporary },
                         onQuickShare = {

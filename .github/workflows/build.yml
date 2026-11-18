@@ -27,7 +27,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: app/libs-full/libcore.aar
-          key: nekobox-libcore-v1-${{ hashFiles('libcore/**', 'buildScript/**') }}
+          key: nekobox-libcore-universal-v2-${{ hashFiles('libcore/**', 'buildScript/**') }}
 
       - name: Try downloading prebuilt libcore.aar from Releases if Cache missed
         if: steps.libcore-cache.outputs.cache-hit != 'true'
@@ -36,7 +36,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           mkdir -p app/libs-full
-          gh release download prebuilt-libs -p "libcore.aar" -D app/libs-full --clobber || true
+          gh release download prebuilt-libs-universal -p "libcore.aar" -D app/libs-full --clobber || true
 
       - name: Set up Android NDK & Go (Only if libcore.aar is missing)
         if: hashFiles('app/libs-full/libcore.aar') == ''
@@ -53,15 +53,15 @@ jobs:
           ./run lib core
           ls -lh app/libs-full/libcore.aar
 
-      - name: Save libcore.aar permanently to prebuilt-libs Release
+      - name: Save libcore.aar permanently to prebuilt-libs-universal Release
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           if [ -f app/libs-full/libcore.aar ]; then
-            if ! gh release view prebuilt-libs >/dev/null 2>&1; then
-              gh release create prebuilt-libs app/libs-full/libcore.aar --title "Prebuilt libcore.aar (Do Not Delete)" --notes "Permanent prebuilt NekoBox libcore.aar for fast CI builds"
+            if ! gh release view prebuilt-libs-universal >/dev/null 2>&1; then
+              gh release create prebuilt-libs-universal app/libs-full/libcore.aar --title "Prebuilt libcore.aar (Do Not Delete)" --notes "Permanent prebuilt NekoBox libcore.aar for fast CI builds"
             fi
           fi
 
