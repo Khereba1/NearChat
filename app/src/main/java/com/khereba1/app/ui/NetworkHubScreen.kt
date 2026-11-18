@@ -232,34 +232,6 @@ fun NetworkHubScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Live Status Pills Bar (Host Router, Client VPN, sing-box)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                StatusPill(
-                    label = stringResource(R.string.tab_router),
-                    active = routerState.isRunning,
-                    icon = Icons.Rounded.Router,
-                    onClick = { selectedTab = 0 }
-                )
-                StatusPill(
-                    label = stringResource(R.string.tab_vpn),
-                    active = isVpnRunning,
-                    icon = Icons.Rounded.VpnKey,
-                    onClick = { selectedTab = 1 }
-                )
-                StatusPill(
-                    label = stringResource(R.string.tab_xray),
-                    active = xrayState.isRunning,
-                    icon = Icons.Rounded.Security,
-                    onClick = { selectedTab = 2 }
-                )
-            }
-
             TabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -268,19 +240,40 @@ fun NetworkHubScreen(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Rounded.Router, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    icon = {
+                        Icon(
+                            if (routerState.isRunning) Icons.Rounded.CheckCircle else Icons.Rounded.Router,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = if (routerState.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
                     text = { Text(stringResource(R.string.tab_router), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Rounded.VpnKey, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    icon = {
+                        Icon(
+                            if (isVpnRunning) Icons.Rounded.CheckCircle else Icons.Rounded.VpnKey,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = if (isVpnRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
                     text = { Text(stringResource(R.string.tab_vpn), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Rounded.Security, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    icon = {
+                        Icon(
+                            if (xrayState.isRunning) Icons.Rounded.CheckCircle else Icons.Rounded.Security,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = if (xrayState.isRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
                     text = { Text(stringResource(R.string.tab_xray), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 )
             }
@@ -560,12 +553,12 @@ fun NetworkHubScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "Auto-Connect on Host Wi-Fi (اتصال وفصل تلقائي)",
+                                                text = stringResource(R.string.auto_vpn_hotspot_title),
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 fontWeight = FontWeight.SemiBold
                                             )
                                             Text(
-                                                text = "يشغل الـ VPN تلقائياً أول ما تلقط شبكة التابلت/جهاز البث ويفصله تلقائياً لما تقفل الشبكة (بدون GPS)",
+                                                text = stringResource(R.string.auto_vpn_hotspot_desc),
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -604,12 +597,12 @@ fun NetworkHubScreen(
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(
-                                                    text = "مراقبة دائمة في الخلفية (إشعار صامت اختياري)",
+                                                    text = stringResource(R.string.auto_vpn_watcher_title),
                                                     style = MaterialTheme.typography.bodyMedium,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
                                                 Text(
-                                                    text = "يبقي المراقب نشطاً باستهلاك شبه معدوم حتى لو أغلقت التطبيق من الخلفية",
+                                                    text = stringResource(R.string.auto_vpn_watcher_desc),
                                                     style = MaterialTheme.typography.labelSmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
@@ -909,12 +902,12 @@ fun NetworkHubScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "Streamer Keep-Alive (وضع جهاز البث المستمر)",
+                                            text = stringResource(R.string.streamer_wakelock_title),
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontWeight = FontWeight.SemiBold
                                         )
                                         Text(
-                                            text = "يمنع نوم المعالج أو ضعف الواي فاي والهوتسبوت عند إغلاق شاشة التابلت أو الجهاز القديم",
+                                            text = stringResource(R.string.streamer_wakelock_desc),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )

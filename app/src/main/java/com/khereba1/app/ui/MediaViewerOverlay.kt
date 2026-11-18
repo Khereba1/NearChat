@@ -1,17 +1,21 @@
 package com.khereba1.app.ui
 
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
@@ -101,6 +105,36 @@ fun InAppImageViewerDialog(
 @Composable
 fun InAppVideoPlayerDialog(
     file: File,
+    onOpenExternal: (() -> Unit)? = null,
+    onDismiss: () -> Unit
+) {
+    InAppVideoPlayerCore(
+        path = file.absolutePath,
+        isUrl = false,
+        onOpenExternal = onOpenExternal,
+        onDismiss = onDismiss
+    )
+}
+
+@Composable
+fun InAppStreamVideoPlayerDialog(
+    streamUrl: String,
+    onOpenExternal: (() -> Unit)? = null,
+    onDismiss: () -> Unit
+) {
+    InAppVideoPlayerCore(
+        path = streamUrl,
+        isUrl = true,
+        onOpenExternal = onOpenExternal,
+        onDismiss = onDismiss
+    )
+}
+
+@Composable
+private fun InAppVideoPlayerCore(
+    path: String,
+    isUrl: Boolean,
+    onOpenExternal: (() -> Unit)?,
     onDismiss: () -> Unit
 ) {
     Dialog(
@@ -119,7 +153,11 @@ fun InAppVideoPlayerDialog(
                         val mc = MediaController(ctx)
                         mc.setAnchorView(this)
                         setMediaController(mc)
-                        setVideoPath(file.absolutePath)
+                        if (isUrl) {
+                            setVideoURI(Uri.parse(path))
+                        } else {
+                            setVideoPath(path)
+                        }
                         setOnPreparedListener { mp ->
                             mp.isLooping = false
                             start()
@@ -128,14 +166,26 @@ fun InAppVideoPlayerDialog(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-            IconButton(
-                onClick = onDismiss,
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(16.dp)
-                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Rounded.Close, contentDescription = null, tint = Color.White)
+                if (onOpenExternal != null) {
+                    IconButton(
+                        onClick = onOpenExternal,
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                    ) {
+                        Icon(Icons.Rounded.OpenInNew, contentDescription = null, tint = Color.White)
+                    }
+                }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                ) {
+                    Icon(Icons.Rounded.Close, contentDescription = null, tint = Color.White)
+                }
             }
         }
     }

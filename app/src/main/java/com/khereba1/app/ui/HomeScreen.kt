@@ -22,6 +22,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bluetooth
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
@@ -67,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import com.khereba1.app.AppLog
 import com.khereba1.app.R
 import com.khereba1.app.data.ChatRoom
+import com.khereba1.app.network.LanDiscovery
 import com.khereba1.app.network.LanServerState
 import com.khereba1.app.network.RouterBridgeState
 import com.khereba1.app.ui.theme.ChatAccentColors
@@ -91,7 +94,9 @@ fun HomeScreen(
     onJoinLan: (String, String, String) -> Unit,
     onOpenBluetoothChat: () -> Unit,
     onOpenNetworkHub: () -> Unit,
-    onChangeLanguage: (String) -> Unit
+    onChangeLanguage: (String) -> Unit,
+    discoveredHosts: Map<String, String> = emptyMap(),
+    onStartQuickShare: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
@@ -149,6 +154,13 @@ fun HomeScreen(
                         Icon(
                             if (showSearch) Icons.Rounded.Close else Icons.Rounded.Search,
                             contentDescription = null
+                        )
+                    }
+                    IconButton(onClick = onStartQuickShare) {
+                        Icon(
+                            Icons.Rounded.Bolt,
+                            contentDescription = stringResource(R.string.quick_share_title),
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
                     IconButton(onClick = onOpenNetworkHub) {
@@ -249,9 +261,12 @@ fun HomeScreen(
                     .background(MaterialTheme.colorScheme.background)
             ) {
                 items(filtered, key = { it.id }) { room ->
+                    val isCloudOnline = room.isCloudLinked &&
+                        discoveredHosts.containsKey(room.remoteToken?.uppercase())
                     ChatRowItem(
                         modifier = Modifier.animateItem(),
                         room = room,
+                        isCloudOnline = isCloudOnline,
                         onClick = { onOpenChat(room) },
                         onRename = { renameTarget = room },
                         onDelete = { deleteTarget = room }
@@ -343,6 +358,7 @@ fun HomeScreen(
 private fun ChatRowItem(
     modifier: Modifier = Modifier,
     room: ChatRoom,
+    isCloudOnline: Boolean = false,
     onClick: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit
@@ -385,7 +401,31 @@ private fun ChatRowItem(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
-                if (room.isLanShared) {
+                if (room.isTemporary) {
+                    Spacer(Modifier.width(6.dp))
+                    Badge(containerColor = MaterialTheme.colorScheme.primaryContainer) {
+                        Text(
+                            stringResource(R.string.quick_share_active_badge),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 4.dp)
+                        )
+                    }
+                } else if (room.isCloudLinked) {
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (isCloudOnline) Color(0xFF22C55E) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Rounded.Cloud,
+                        contentDescription = null,
+                        tint = if (isCloudOnline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(15.dp)
+                    )
+                } else if (room.isLanShared) {
                     Spacer(Modifier.width(6.dp))
                     Icon(
                         Icons.Rounded.WifiTethering,
@@ -545,14 +585,23 @@ private fun JoinLanDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                val discoveredUrl = LanDiscovery.resolveToken(code.ifBlank { urlOrLink })
                 OutlinedTextField(
                     value = urlOrLink,
                     onValueChange = { urlOrLink = it },
-                    label = { Text(stringResource(R.string.server_url_label)) },
+                    label = { Text(stringResource(R.string.join_code_only_hint)) },
                     placeholder = { Text(stringResource(R.string.server_url_hint)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (!discoveredUrl.isNullOrBlank()) {
+                    Text(
+                        text = "${stringResource(R.string.discovered_on_wifi)}: $discoveredUrl",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF22C55E),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it },
@@ -571,7 +620,7 @@ private fun JoinLanDialog(
         },
         confirmButton = {
             Button(
-                enabled = urlOrLink.isNotBlank(),
+                enabled = urlOrLink.isNotBlank() || code.isNotBlank(),
                 onClick = { onConnect(urlOrLink, code, displayName.ifBlank { defaultGuestName }) }
             ) { Text(stringResource(R.string.connect)) }
         },

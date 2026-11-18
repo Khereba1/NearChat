@@ -8,6 +8,7 @@ import com.khereba1.app.data.LanPermission
 import com.khereba1.app.data.NearChatDb
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -82,11 +83,11 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
     private fun handleClient(socket: Socket) {
         socket.use { sock ->
             try {
-                sock.soTimeout = 60_000
+                sock.soTimeout = 120_000
                 sock.tcpNoDelay = true
                 runCatching { sock.sendBufferSize = 262_144 }
                 runCatching { sock.receiveBufferSize = 262_144 }
-                val input = sock.getInputStream()
+                val input = BufferedInputStream(sock.getInputStream(), 262_144)
                 val output = BufferedOutputStream(sock.getOutputStream(), 262_144)
 
                 val requestLine = readLineAscii(input) ?: return
@@ -106,9 +107,17 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
                     }
                 }
 
-                val contentLength = headers["content-length"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
-                val bodyBytes = if (contentLength > 0 && contentLength <= 100 * 1024 * 1024) {
-                    readExactBytes(input, contentLength)
+                val contentLength = headers["content-length"]?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+
+                // Handle streaming upload directly to disk (no 100 MB RAM limit)
+                val segments = rawPath.trim('/').split('/')
+                if (method == "POST" && segments.size >= 3 && segments[0] == "api" && segments[2] == "upload") {
+                    handleStreamingUpload(segments[1], headers, contentLength, input, output)
+                    return
+                }
+
+                val bodyBytes = if (contentLength > 0L && contentLength <= 10 * 1024 * 1024L) {
+                    readExactBytes(input, contentLength.toInt())
                 } else {
                     ByteArray(0)
                 }
@@ -120,6 +129,36 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
         }
     }
 
+    private fun handleStreamingUpload(
+        token: String,
+        headers: Map<String, String>,
+        contentLength: Long,
+        input: InputStream,
+        out: OutputStream
+    ) {
+        val match = db.getChatByToken(token)
+        if (match == null) {
+            sendJson(out, 404, JSONObject().put("error", "Chat not shared or invalid code"))
+            return
+        }
+        val (room, perm) = match
+        if (perm != LanPermission.EDITOR) {
+            sendJson(out, 403, JSONObject().put("error", "Viewer mode cannot upload"))
+            return
+        }
+        if (contentLength <= 0L) {
+            sendJson(out, 400, JSONObject().put("error", "Empty file"))
+            return
+        }
+        val rawName = headers["x-filename"] ?: "file_${System.currentTimeMillis()}"
+        val fileName = URLDecoder.decode(rawName, "UTF-8")
+        val mime = headers["x-mime"]
+        val sender = URLDecoder.decode(headers["x-sender"] ?: "Guest", "UTF-8")
+            .trim().ifEmpty { "Guest" }
+        val msg = db.saveStreamToChat(room.id, fileName, mime, input, contentLength, sender)
+        sendJson(out, 200, JSONObject().put("message", messageToJson(msg)))
+    }
+
     private fun routeRequest(
         method: String,
         path: String,
@@ -128,7 +167,7 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
         out: OutputStream
     ) {
         if (path == "/" || path.isEmpty()) {
-            sendHtml(out, 200, "<html><body style='font-family:sans-serif;padding:24px;background:#0D1518;color:#E2E8F0'><h2>NearChat Local Server</h2><p>Open a shared chat link provided by the host.</p></body></html>")
+            sendHtml(out, 200, "<html><body style='font-family:sans-serif;padding:24px;background:#0B1216;color:#E8EEF1'><h2>NearChat</h2><p>Open a shared chat link provided by the host.</p></body></html>")
             return
         }
 
@@ -137,7 +176,7 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
             val token = segments[1]
             val match = db.getChatByToken(token)
             if (match == null) {
-                sendHtml(out, 404, "<html><body style='font-family:sans-serif;padding:24px;background:#0D1518;color:#F87171'><h3>Chat not found or sharing is disabled.</h3></body></html>")
+                sendHtml(out, 404, "<html><body style='font-family:sans-serif;padding:24px;background:#0B1216;color:#F87171'><h3>Session ended or chat not found.</h3></body></html>")
                 return
             }
             sendHtml(out, 200, buildWebUiHtml(token, match.first, match.second))
@@ -197,24 +236,6 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
                         return
                     }
                     val msg = db.insertTextMessage(room.id, text, sender)
-                    sendJson(out, 200, JSONObject().put("message", messageToJson(msg)))
-                }
-
-                method == "POST" && action == "upload" -> {
-                    if (perm != LanPermission.EDITOR) {
-                        sendJson(out, 403, JSONObject().put("error", "Viewer mode cannot upload"))
-                        return
-                    }
-                    if (body.isEmpty()) {
-                        sendJson(out, 400, JSONObject().put("error", "Empty file"))
-                        return
-                    }
-                    val rawName = headers["x-filename"] ?: "file_${System.currentTimeMillis()}"
-                    val fileName = URLDecoder.decode(rawName, "UTF-8")
-                    val mime = headers["x-mime"]
-                    val sender = URLDecoder.decode(headers["x-sender"] ?: "Guest", "UTF-8")
-                        .trim().ifEmpty { "Guest" }
-                    val msg = db.saveBytesToChat(room.id, fileName, mime, body, sender)
                     sendJson(out, 200, JSONObject().put("message", messageToJson(msg)))
                 }
 
@@ -397,6 +418,7 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
     private fun buildWebUiHtml(token: String, room: ChatRoom, perm: LanPermission): String {
         val isEditor = perm == LanPermission.EDITOR
         val safeTitle = escapeHtml(room.title)
+        val subtitle = if (room.isTemporary) "NearChat Quick Share" else "NearChat Cloud"
         val roleText = if (isEditor) "Editor" else "Viewer"
         return """
 <!DOCTYPE html>
@@ -406,45 +428,47 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>$safeTitle — NearChat</title>
 <style>
-  :root { --bg:#0D1518; --card:#162226; --accent:#14B8A6; --text:#E2E8F0; --muted:#94A3B8; --border:#24353B; }
+  :root { --bg:#0B1216; --card:#121D22; --accent:#19C6B5; --text:#E8EEF1; --muted:#A1B0B8; --border:#24353B; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); display:flex; flex-direction:column; height:100vh; }
   header { padding:12px 16px; background:var(--card); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .title { font-weight:700; font-size:17px; }
-  .badge { font-size:12px; padding:4px 10px; border-radius:99px; background:${if (isEditor) "#0F766E" else "#334155"}; color:#fff; }
+  .badge { font-size:12px; padding:4px 10px; border-radius:99px; background:${if (isEditor) "#164E4A" else "#24353B"}; color:#CCFBF1; }
+  #uploadBar { display:none; padding:8px 16px; background:#164E4A; color:#CCFBF1; font-size:13px; }
   #list { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:10px; }
-  .msg { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:10px 12px; max-width:92%; }
+  .msg { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:10px 14px; max-width:94%; }
   .meta { font-size:11px; color:var(--muted); margin-bottom:4px; display:flex; justify-content:space-between; gap:10px; }
   .txt { white-space:pre-wrap; word-break:break-word; font-size:15px; line-height:1.45; }
-  img.media { max-width:100%; max-height:280px; border-radius:10px; margin-top:6px; display:block; }
-  video.media { max-width:100%; max-height:280px; border-radius:10px; margin-top:6px; display:block; }
+  img.media { max-width:100%; max-height:300px; border-radius:10px; margin-top:6px; display:block; }
+  video.media { max-width:100%; max-height:300px; border-radius:10px; margin-top:6px; display:block; background:#000; }
   audio.media { width:100%; margin-top:6px; }
-  .filelink { display:inline-block; margin-top:6px; color:var(--accent); text-decoration:none; font-weight:600; }
+  .filelink { display:inline-block; margin-top:8px; color:var(--accent); text-decoration:none; font-weight:600; font-size:14px; }
   .actions { margin-top:6px; display:flex; gap:8px; }
-  .actions button { background:#24353B; color:var(--text); border:none; border-radius:8px; padding:4px 8px; font-size:12px; cursor:pointer; }
+  .actions button { background:#1B292F; color:var(--text); border:none; border-radius:8px; padding:4px 10px; font-size:12px; cursor:pointer; }
   footer { padding:10px; background:var(--card); border-top:1px solid var(--border); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  input[type=text] { flex:1; min-width:140px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:#0D1518; color:var(--text); font-size:15px; }
-  .btn { background:var(--accent); color:#042F2E; border:none; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; }
-  .btn-sec { background:#24353B; color:var(--text); }
+  input[type=text] { flex:1; min-width:130px; padding:10px 12px; border-radius:12px; border:1px solid var(--border); background:#0B1216; color:var(--text); font-size:15px; }
+  .btn { background:var(--accent); color:#042F2E; border:none; border-radius:12px; padding:10px 14px; font-weight:700; cursor:pointer; }
+  .btn-sec { background:#1B292F; color:var(--text); }
 </style>
 </head>
 <body>
 <header>
   <div>
     <div class="title">$safeTitle</div>
-    <div style="font-size:12px;color:var(--muted)">NearChat LAN</div>
+    <div style="font-size:12px;color:var(--muted)">$subtitle</div>
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
     <span class="badge">$roleText</span>
     <button class="btn btn-sec" style="padding:6px 10px;font-size:12px" onclick="loadMsgs()">↻</button>
   </div>
 </header>
+<div id="uploadBar"></div>
 <div id="list"></div>
 ${if (isEditor) """
 <footer>
   <input id="sender" type="text" placeholder="Name" style="max-width:95px" value="Guest">
-  <input id="msgInput" type="text" placeholder="Message...">
-  <input id="fileInput" type="file" style="display:none" onchange="uploadFile(this.files[0])">
+  <input id="msgInput" type="text" placeholder="Message..." onkeydown="if(event.key==='Enter')sendText()">
+  <input id="fileInput" type="file" multiple style="display:none" onchange="uploadFiles(this.files)">
   <button class="btn btn-sec" onclick="document.getElementById('fileInput').click()">+</button>
   <button class="btn" onclick="sendText()">Send</button>
 </footer>
@@ -453,6 +477,14 @@ ${if (isEditor) """
 const TOKEN = "$token";
 const IS_EDITOR = $isEditor;
 let lastHash = "";
+
+function fmtSize(b) {
+  if (!b) return '';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+  return (b / 1073741824).toFixed(2) + ' GB';
+}
 
 async function loadMsgs() {
   try {
@@ -468,7 +500,7 @@ async function loadMsgs() {
 
 function render(msgs) {
   const list = document.getElementById('list');
-  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 90;
   list.innerHTML = '';
   for (const m of msgs) {
     const card = document.createElement('div');
@@ -494,15 +526,16 @@ function render(msgs) {
         const img = document.createElement('img'); img.className = 'media'; img.src = url;
         card.appendChild(img);
       } else if (m.type === 'VIDEO') {
-        const v = document.createElement('video'); v.className = 'media'; v.src = url; v.controls = true;
+        const v = document.createElement('video'); v.className = 'media'; v.src = url; v.controls = true; v.preload = 'metadata';
         card.appendChild(v);
       } else if (m.type === 'AUDIO') {
-        const a = document.createElement('audio'); a.className = 'media'; a.src = url; a.controls = true;
+        const a = document.createElement('audio'); a.className = 'media'; a.src = url; a.controls = true; a.preload = 'metadata';
         card.appendChild(a);
       }
+      const cleanName = m.mediaFileName.includes('_') ? m.mediaFileName.substring(m.mediaFileName.indexOf('_') + 1) : m.mediaFileName;
       const dl = document.createElement('a');
-      dl.className = 'filelink'; dl.href = url; dl.download = m.mediaFileName;
-      dl.textContent = '⬇ ' + m.mediaFileName;
+      dl.className = 'filelink'; dl.href = url; dl.download = cleanName;
+      dl.textContent = '⬇ ' + cleanName + (m.mediaSize ? ' (' + fmtSize(m.mediaSize) + ')' : '');
       card.appendChild(dl);
     }
     if (IS_EDITOR) {
@@ -536,20 +569,32 @@ async function sendText() {
   loadMsgs();
 }
 
-async function uploadFile(file) {
-  if (!file) return;
+async function uploadFiles(fileList) {
+  if (!fileList || !fileList.length) return;
   const sender = (document.getElementById('sender').value || 'Guest').trim();
-  await fetch('/api/' + TOKEN + '/upload', {
-    method:'POST',
-    headers:{
-      'X-Filename': encodeURIComponent(file.name),
-      'X-Mime': file.type || 'application/octet-stream',
-      'X-Sender': encodeURIComponent(sender)
-    },
-    body: file
-  });
+  const bar = document.getElementById('uploadBar');
+  bar.style.display = 'block';
+  for (let i = 0; i < fileList.length; i++) {
+    const file = fileList[i];
+    await new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/' + TOKEN + '/upload', true);
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      xhr.setRequestHeader('X-Mime', file.type || 'application/octet-stream');
+      xhr.setRequestHeader('X-Sender', encodeURIComponent(sender));
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          bar.textContent = 'Uploading (' + (i + 1) + '/' + fileList.length + '): ' + file.name + ' — ' + pct + '%';
+        }
+      };
+      xhr.onloadend = () => resolve();
+      xhr.send(file);
+    });
+    loadMsgs();
+  }
+  bar.style.display = 'none';
   document.getElementById('fileInput').value = '';
-  loadMsgs();
 }
 
 async function editMsg(id, oldText) {
@@ -574,7 +619,7 @@ async function delMsg(id) {
 }
 
 loadMsgs();
-setInterval(loadMsgs, 3000);
+setInterval(loadMsgs, 2500);
 </script>
 </body>
 </html>

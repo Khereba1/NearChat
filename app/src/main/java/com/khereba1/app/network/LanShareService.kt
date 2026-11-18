@@ -83,6 +83,7 @@ class LanShareService : Service() {
         if (action == ACTION_STOP) {
             WifiProxyServer.stop(keepGroup = true)
             releaseLocks()
+            LanDiscovery.stopBroadcasting()
             server?.stop()
             server = null
             _state.value = LanServerState(isRunning = false)
@@ -117,6 +118,7 @@ class LanShareService : Service() {
                 val ip = NetworkUtils.getLocalIpAddress() ?: "127.0.0.1"
                 val url = "http://$ip:${s.port}"
                 _state.value = LanServerState(isRunning = true, baseUrl = url, port = s.port)
+                LanDiscovery.startBroadcasting(this) { server?.port ?: 8765 }
             }
         }
 
@@ -166,8 +168,8 @@ class LanShareService : Service() {
         )
         val notif = NotificationCompat.Builder(this, WATCHER_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("NearChat Auto-VPN Watcher")
-            .setContentText("بانتظار لقط شبكة التابلت/البث للاتصال تلقائياً")
+            .setContentTitle(getString(R.string.auto_vpn_watcher_title))
+            .setContentText(getString(R.string.auto_vpn_hotspot_desc))
             .setContentIntent(openIntent)
             .addAction(0, getString(R.string.stop_server), stopWatcherIntent)
             .setPriority(NotificationCompat.PRIORITY_MIN)
@@ -180,6 +182,7 @@ class LanShareService : Service() {
 
     override fun onDestroy() {
         releaseLocks()
+        LanDiscovery.stopBroadcasting()
         server?.stop()
         server = null
         _state.value = LanServerState(isRunning = false)

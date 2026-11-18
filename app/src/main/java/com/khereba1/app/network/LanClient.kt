@@ -7,6 +7,9 @@ import com.khereba1.app.data.RemoteChatInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -19,20 +22,35 @@ object LanClient {
         val trimmed = rawUrlOrLink.trim().trimEnd('/')
         val cMarker = "/c/"
         val idx = trimmed.indexOf(cMarker)
-        return if (idx > 0) {
+        if (idx > 0) {
             val base = trimmed.substring(0, idx)
             val token = trimmed.substring(idx + cMarker.length).substringBefore("/").substringBefore("?").trim()
-            if (token.isEmpty()) null else base to token
-        } else {
-            val code = rawCode.trim()
-            val base = if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) trimmed else "http://$trimmed"
-            if (base.isEmpty() || code.isEmpty()) null else base to code
+            return if (token.isEmpty()) null else base to token
         }
+        val code = rawCode.trim().ifEmpty {
+            // Allow entering ONLY the 6-char code into the first field when Auto-Discovery found it
+            if (!trimmed.contains(".") && !trimmed.contains(":") && trimmed.length in 5..12) trimmed else ""
+        }
+        if (code.isEmpty()) return null
+        val autoUrl = LanDiscovery.resolveToken(code)
+        val rawHost = if (trimmed.equals(code, ignoreCase = true)) "" else trimmed
+        val base = when {
+            rawHost.startsWith("http://") || rawHost.startsWith("https://") -> rawHost
+            rawHost.isNotEmpty() -> "http://$rawHost"
+            !autoUrl.isNullOrBlank() -> autoUrl
+            else -> ""
+        }
+        return if (base.isEmpty()) null else base to code
+    }
+
+    fun mediaUrl(serverUrl: String, token: String, fileName: String): String {
+        val enc = URLEncoder.encode(fileName, "UTF-8").replace("+", "%20")
+        return "${serverUrl.trimEnd('/')}/api/$token/media/$enc"
     }
 
     suspend fun fetchInfo(serverUrl: String, token: String): Result<RemoteChatInfo> = withContext(Dispatchers.IO) {
         runCatching {
-            val conn = (URL("$serverUrl/api/$token/info").openConnection() as HttpURLConnection).apply {
+            val conn = (URL("${serverUrl.trimEnd('/')}/api/$token/info").openConnection() as HttpURLConnection).apply {
                 connectTimeout = 5000
                 readTimeout = 5000
             }
@@ -42,8 +60,8 @@ object LanClient {
             if (code !in 200..299) error("HTTP $code: $text")
             val json = JSONObject(text)
             RemoteChatInfo(
-                serverUrl = serverUrl,
-                token = token,
+                serverUrl = serverUrl.trimEnd('/'),
+                token = token.trim().uppercase(),
                 chatId = json.getString("chatId"),
                 title = json.getString("title"),
                 description = json.optString("description", ""),
@@ -54,7 +72,7 @@ object LanClient {
 
     suspend fun fetchMessages(serverUrl: String, token: String): Result<List<ChatMessage>> = withContext(Dispatchers.IO) {
         runCatching {
-            val conn = (URL("$serverUrl/api/$token/messages").openConnection() as HttpURLConnection).apply {
+            val conn = (URL("${serverUrl.trimEnd('/')}/api/$token/messages").openConnection() as HttpURLConnection).apply {
                 connectTimeout = 5000
                 readTimeout = 8000
             }
@@ -86,36 +104,97 @@ object LanClient {
     }
 
     suspend fun sendText(serverUrl: String, token: String, text: String, sender: String): Result<Unit> =
-        postJson("$serverUrl/api/$token/text", JSONObject().put("text", text).put("sender", sender))
+        postJson("${serverUrl.trimEnd('/')}/api/$token/text", JSONObject().put("text", text).put("sender", sender))
 
     suspend fun editMessage(serverUrl: String, token: String, messageId: String, newText: String): Result<Unit> =
-        postJson("$serverUrl/api/$token/edit", JSONObject().put("messageId", messageId).put("text", newText))
+        postJson("${serverUrl.trimEnd('/')}/api/$token/edit", JSONObject().put("messageId", messageId).put("text", newText))
 
     suspend fun deleteMessage(serverUrl: String, token: String, messageId: String): Result<Unit> =
-        postJson("$serverUrl/api/$token/delete", JSONObject().put("messageId", messageId))
+        postJson("${serverUrl.trimEnd('/')}/api/$token/delete", JSONObject().put("messageId", messageId))
 
-    suspend fun uploadBytes(
+    /** Streams a file of ANY size directly to the Host without loading it into RAM. */
+    suspend fun uploadStream(
         serverUrl: String,
         token: String,
         fileName: String,
         mime: String,
         sender: String,
-        bytes: ByteArray
+        contentLength: Long,
+        inputStream: InputStream,
+        onProgress: (Float) -> Unit = {}
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val conn = (URL("$serverUrl/api/$token/upload").openConnection() as HttpURLConnection).apply {
+            val conn = (URL("${serverUrl.trimEnd('/')}/api/$token/upload").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 doOutput = true
-                connectTimeout = 8000
-                readTimeout = 30_000
+                connectTimeout = 10_000
+                readTimeout = 120_000
                 setRequestProperty("X-Filename", URLEncoder.encode(fileName, "UTF-8"))
                 setRequestProperty("X-Mime", mime)
                 setRequestProperty("X-Sender", URLEncoder.encode(sender, "UTF-8"))
-                setFixedLengthStreamingMode(bytes.size)
+                if (contentLength > 0L) {
+                    setFixedLengthStreamingMode(contentLength)
+                } else {
+                    setChunkedStreamingMode(262_144)
+                }
             }
-            conn.outputStream.use { it.write(bytes) }
+            conn.outputStream.use { out ->
+                val buf = ByteArray(262_144)
+                var sent = 0L
+                while (true) {
+                    val n = inputStream.read(buf)
+                    if (n == -1) break
+                    out.write(buf, 0, n)
+                    sent += n
+                    if (contentLength > 0L) {
+                        onProgress((sent.toFloat() / contentLength.toFloat()).coerceIn(0f, 1f))
+                    }
+                }
+                out.flush()
+            }
             val code = conn.responseCode
             if (code !in 200..299) error("Upload failed: HTTP $code")
+        }
+    }
+
+    /** Downloads a remote media file directly to local cache for offline viewing. */
+    suspend fun downloadMediaToFile(
+        serverUrl: String,
+        token: String,
+        fileName: String,
+        destFile: File,
+        onProgress: (Float) -> Unit = {}
+    ): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = mediaUrl(serverUrl, token, fileName)
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 60_000
+            }
+            val code = conn.responseCode
+            if (code !in 200..299) error("Download failed: HTTP $code")
+            val total = conn.contentLengthLong
+            destFile.parentFile?.mkdirs()
+            val tmp = File(destFile.parentFile, "${destFile.name}.part")
+            conn.inputStream.use { inp ->
+                FileOutputStream(tmp).use { out ->
+                    val buf = ByteArray(262_144)
+                    var received = 0L
+                    while (true) {
+                        val n = inp.read(buf)
+                        if (n == -1) break
+                        out.write(buf, 0, n)
+                        received += n
+                        if (total > 0L) {
+                            onProgress((received.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+                        }
+                    }
+                    out.flush()
+                }
+            }
+            if (destFile.exists()) destFile.delete()
+            tmp.renameTo(destFile)
+            destFile
         }
     }
 

@@ -42,7 +42,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Forward
 import androidx.compose.material.icons.automirrored.rounded.Reply
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Close
@@ -62,6 +65,7 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.WifiTethering
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -115,6 +119,7 @@ import com.khereba1.app.data.MessageType
 import com.khereba1.app.media.AudioPlaybackState
 import com.khereba1.app.media.AudioPlayerManager
 import com.khereba1.app.network.LanServerState
+import com.khereba1.app.network.RouterBridgeState
 import com.khereba1.app.network.NetworkUtils
 import com.khereba1.app.network.QrGenerator
 import com.khereba1.app.ui.theme.ChatAccentColors
@@ -146,7 +151,11 @@ fun ChatScreen(
     onEditMessage: (String, String) -> Unit,
     onDeleteMessage: (String) -> Unit,
     onToggleLanShare: (Boolean) -> Unit,
-    onRegenerateTokens: () -> Unit
+    onRegenerateTokens: () -> Unit,
+    routerState: RouterBridgeState = RouterBridgeState(),
+    onEndQuickShare: (() -> Unit)? = null,
+    onSaveToGallery: (File, String?) -> Unit = { _, _ -> },
+    onForwardMessage: (ChatMessage) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -397,10 +406,23 @@ fun ChatScreen(
             }
         }
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+        ) {
+            if (room.isTemporary) {
+                QuickShareSessionCard(
+                    room = room,
+                    lanState = lanState,
+                    routerState = routerState,
+                    onEndSession = { onEndQuickShare?.invoke() }
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
                 .background(
                     Brush.verticalGradient(
                         listOf(
@@ -466,6 +488,10 @@ fun ChatScreen(
                                     }
                                 },
                                 onReply = { replyTarget = msg },
+                                onForward = { onForwardMessage(msg) },
+                                onSaveToGallery = {
+                                    if (file != null && file.exists()) onSaveToGallery(file, msg.mediaMime)
+                                },
                                 onCopyText = { copyToClipboard(context, msg.text) },
                                 onEditText = { editTarget = msg },
                                 onDelete = { onDeleteMessage(msg.id) }
@@ -497,6 +523,7 @@ fun ChatScreen(
                     Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null)
                 }
             }
+            }
         }
     }
 
@@ -505,7 +532,11 @@ fun ChatScreen(
     }
 
     playVideoFile?.let { f ->
-        InAppVideoPlayerDialog(file = f, onDismiss = { playVideoFile = null })
+        InAppVideoPlayerDialog(
+            file = f,
+            onOpenExternal = { openFileExternally(context, f, "video/*") },
+            onDismiss = { playVideoFile = null }
+        )
     }
 
     editTarget?.let { msg ->
@@ -598,6 +629,8 @@ private fun MessageBubble(
     onSeekAudio: (Int) -> Unit,
     onOpenMedia: () -> Unit,
     onReply: () -> Unit,
+    onForward: () -> Unit,
+    onSaveToGallery: () -> Unit,
     onCopyText: () -> Unit,
     onEditText: () -> Unit,
     onDelete: () -> Unit
@@ -670,6 +703,24 @@ private fun MessageBubble(
                                     onReply()
                                 }
                             )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.action_forward)) },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Forward, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    onForward()
+                                }
+                            )
+                            if (mediaFile != null) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.action_save_gallery)) },
+                                    leadingIcon = { Icon(Icons.Rounded.SaveAlt, contentDescription = null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        onSaveToGallery()
+                                    }
+                                )
+                            }
                             if (bodyText.isNotBlank()) {
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.copy)) },
@@ -1115,5 +1166,104 @@ private fun openFileExternally(context: Context, file: File, mime: String?) {
         context.startActivity(Intent.createChooser(intent, context.getString(R.string.open)))
     } catch (e: Throwable) {
         AppLog.log("UI", "Failed to open file ${file.name}", e)
+    }
+}
+
+
+@Composable
+private fun QuickShareSessionCard(
+    room: ChatRoom,
+    lanState: LanServerState,
+    routerState: RouterBridgeState,
+    onEndSession: () -> Unit
+) {
+    val context = LocalContext.current
+    var expanded by remember { mutableStateOf(true) }
+    val port = if (lanState.port > 0) lanState.port else 8765
+    val hostIp = remember(lanState.baseUrl, routerState.isRunning, routerState.p2pSsid) {
+        when {
+            routerState.isRunning && routerState.p2pSsid.isNotBlank() -> "192.168.49.1"
+            else -> NetworkUtils.getLocalIpAddress() ?: "192.168.43.1"
+        }
+    }
+    val chatUrl = "http://$hostIp:$port/c/${room.editorToken}"
+    val wifiQrText = if (routerState.p2pSsid.isNotBlank() && routerState.p2pPass.isNotBlank()) {
+        "WIFI:T:WPA;S:${routerState.p2pSsid};P:${routerState.p2pPass};;"
+    } else null
+
+    val wifiBmp = remember(wifiQrText) { wifiQrText?.let { QrGenerator.generate(it, 320)?.asImageBitmap() } }
+    val chatBmp = remember(chatUrl) { QrGenerator.generate(chatUrl, 320)?.asImageBitmap() }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Bolt, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Column(modifier = Modifier.weight(1f).clickable { expanded = !expanded }) {
+                    Text(stringResource(R.string.quick_share_title), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Text(chatUrl, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                TextButton(onClick = { copyToClipboard(context, chatUrl) }) {
+                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                }
+                Button(
+                    onClick = onEndSession,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(stringResource(R.string.quick_share_end), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+            if (expanded) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (wifiBmp != null) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(stringResource(R.string.quick_share_wifi_qr), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                                Image(bitmap = wifiBmp, contentDescription = null, modifier = Modifier.size(116.dp).clip(RoundedCornerShape(8.dp)))
+                                Text(routerState.p2pSsid, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${stringResource(R.string.password_label)}: ${routerState.p2pPass}", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            }
+                        }
+                    }
+                    if (chatBmp != null) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(stringResource(R.string.quick_share_chat_qr), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                                Image(bitmap = chatBmp, contentDescription = null, modifier = Modifier.size(116.dp).clip(RoundedCornerShape(8.dp)))
+                                Text("${stringResource(R.string.code_label)}: ${room.editorToken}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

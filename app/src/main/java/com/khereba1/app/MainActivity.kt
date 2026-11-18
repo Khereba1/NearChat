@@ -20,6 +20,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -28,16 +29,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import com.khereba1.app.data.ChatMessage
 import com.khereba1.app.data.ChatRoom
 import com.khereba1.app.data.MessageType
 import com.khereba1.app.data.NearChatDb
-import com.khereba1.app.data.RemoteChatInfo
 import com.khereba1.app.media.AudioPlayerManager
 import com.khereba1.app.media.VoiceRecorder
 import com.khereba1.app.network.BluetoothChatManager
 import com.khereba1.app.network.LanClient
+import com.khereba1.app.network.LanDiscovery
 import com.khereba1.app.network.LanShareService
 import com.khereba1.app.network.WifiProxyServer
 import com.khereba1.app.ui.BluetoothChatScreen
@@ -57,10 +59,15 @@ private data class PendingShare(
     val uris: List<Uri> = emptyList()
 )
 
+private data class ForwardRequest(
+    val sourceChatId: String,
+    val message: ChatMessage
+)
+
 private sealed interface NavRoute {
     data object Home : NavRoute
     data class LocalChat(val chatId: String) : NavRoute
-    data class RemoteChat(val info: RemoteChatInfo, val displayName: String) : NavRoute
+    data class CloudChat(val chatId: String) : NavRoute
     data object BluetoothChat : NavRoute
     data object NetworkHub : NavRoute
 }
@@ -89,7 +96,13 @@ class MainActivity : ComponentActivity() {
                 val dbVersion by db.changes.collectAsState()
                 val lanState by LanShareService.state.collectAsState()
                 val routerState by WifiProxyServer.state.collectAsState()
+                val discoveredHosts by LanDiscovery.discoveredHosts.collectAsState()
                 val btState by btManager.state.collectAsState()
+
+                DisposableEffect(Unit) {
+                    LanDiscovery.startListening()
+                    onDispose { LanDiscovery.stopListening() }
+                }
 
                 var chats by remember { mutableStateOf<List<ChatRoom>>(emptyList()) }
                 var storageBytes by remember { mutableLongStateOf(0L) }
@@ -102,10 +115,10 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var activeChatId by remember { mutableStateOf<String?>(null) }
-                var remoteSession by remember { mutableStateOf<Pair<RemoteChatInfo, String>?>(null) }
                 var showBluetooth by remember { mutableStateOf(false) }
                 var showNetworkHub by remember { mutableStateOf(false) }
                 var isRecording by remember { mutableStateOf(false) }
+                var forwardRequest by remember { mutableStateOf<ForwardRequest?>(null) }
 
                 var currentLang by remember { mutableStateOf(prefs.getString("lang", "system") ?: "system") }
 
@@ -155,6 +168,46 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                fun launchQuickShare(share: PendingShare? = null) {
+                    scope.launch {
+                        val room = withContext(Dispatchers.IO) {
+                            val r = db.createChat(
+                                title = getString(R.string.quick_share_title),
+                                colorIndex = 0,
+                                isTemporary = true,
+                                isLanShared = true
+                            )
+                            if (share != null) {
+                                savePendingShare(db, r.id, share)
+                            }
+                            r
+                        }
+                        LanShareService.start(this@MainActivity)
+                        if (!WifiProxyServer.state.value.isRunning) {
+                            val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION)
+                            } else {
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                            }
+                            routerPermLauncher.launch(perms)
+                        }
+                        activeChatId = room.id
+                    }
+                }
+
+                fun handleSaveToGallery(file: File, mime: String?) {
+                    scope.launch {
+                        val ok = withContext(Dispatchers.IO) {
+                            db.exportToGalleryOrDownloads(file, mime)
+                        }
+                        Toast.makeText(
+                            this@MainActivity,
+                            getString(if (ok) R.string.saved_to_gallery else R.string.save_gallery_failed),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+
                 LaunchedEffect(Unit) {
                     val sharedCount = withContext(Dispatchers.IO) { db.getSharedChatsCount() }
                     if (sharedCount > 0 && !lanState.isRunning) {
@@ -162,11 +215,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val activeRoomObj = activeChatId?.let { id -> chats.firstOrNull { it.id == id } }
                 val currentRoute: NavRoute = when {
                     showNetworkHub -> NavRoute.NetworkHub
                     showBluetooth -> NavRoute.BluetoothChat
-                    remoteSession != null -> NavRoute.RemoteChat(remoteSession!!.first, remoteSession!!.second)
-                    activeChatId != null && chats.any { it.id == activeChatId } -> NavRoute.LocalChat(activeChatId!!)
+                    activeRoomObj != null && activeRoomObj.isCloudLinked -> NavRoute.CloudChat(activeRoomObj.id)
+                    activeRoomObj != null -> NavRoute.LocalChat(activeRoomObj.id)
                     else -> NavRoute.Home
                 }
 
@@ -196,7 +250,7 @@ class MainActivity : ComponentActivity() {
                                     routerPermLauncher.launch(perms)
                                 },
                                 onStopRouter = {
-                                    val keep = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q &&
+                                    val keep = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
                                         getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("keep_wifi_group", false)
                                     WifiProxyServer.stop(keepGroup = keep)
                                 },
@@ -220,11 +274,26 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        is NavRoute.RemoteChat -> {
+                        is NavRoute.CloudChat -> {
+                            val cloudRoom = chats.first { it.id == route.chatId }
+                            var cachedMessages by remember(cloudRoom.id) { mutableStateOf<List<ChatMessage>>(emptyList()) }
+                            LaunchedEffect(dbVersion, cloudRoom.id) {
+                                cachedMessages = withContext(Dispatchers.IO) { db.getMessages(cloudRoom.id) }
+                            }
                             RemoteChatScreen(
-                                info = route.info,
-                                displayName = route.displayName,
-                                onBack = { remoteSession = null }
+                                room = cloudRoom,
+                                cachedMessages = cachedMessages,
+                                discoveredHosts = discoveredHosts,
+                                getMediaFile = { fileName -> db.getMediaFile(cloudRoom.id, fileName) },
+                                onUpdateServerUrl = { newUrl ->
+                                    scope.launch(Dispatchers.IO) { db.updateCloudServerUrl(cloudRoom.id, newUrl) }
+                                },
+                                onSyncMessages = { remoteMsgs ->
+                                    scope.launch(Dispatchers.IO) { db.syncRemoteMessages(cloudRoom.id, remoteMsgs) }
+                                },
+                                onSaveToGallery = { f, mime -> handleSaveToGallery(f, mime) },
+                                onForwardMessage = { msg -> forwardRequest = ForwardRequest(cloudRoom.id, msg) },
+                                onBack = { activeChatId = null }
                             )
                         }
 
@@ -240,6 +309,7 @@ class MainActivity : ComponentActivity() {
                                 room = activeRoom,
                                 messages = messages,
                                 lanState = lanState,
+                                routerState = routerState,
                                 isRecording = isRecording,
                                 getMediaFile = { fileName -> db.getMediaFile(activeRoom.id, fileName) },
                                 onBack = {
@@ -329,7 +399,24 @@ class MainActivity : ComponentActivity() {
                                     scope.launch(Dispatchers.IO) {
                                         db.regenerateTokens(activeRoom.id)
                                     }
-                                }
+                                },
+                                onEndQuickShare = {
+                                    val keep = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                                        prefs.getBoolean("keep_wifi_group", false)
+                                    WifiProxyServer.stop(keepGroup = keep)
+                                    activeChatId = null
+                                    scope.launch(Dispatchers.IO) {
+                                        db.deleteChat(activeRoom.id)
+                                        val count = db.getSharedChatsCount()
+                                        if (count == 0) {
+                                            withContext(Dispatchers.Main) {
+                                                LanShareService.stop(this@MainActivity)
+                                            }
+                                        }
+                                    }
+                                },
+                                onSaveToGallery = { f, mime -> handleSaveToGallery(f, mime) },
+                                onForwardMessage = { msg -> forwardRequest = ForwardRequest(activeRoom.id, msg) }
                             )
                         }
 
@@ -341,6 +428,8 @@ class MainActivity : ComponentActivity() {
                                 storageBytes = storageBytes,
                                 currentLang = currentLang,
                                 themeMode = themeMode,
+                                discoveredHosts = discoveredHosts,
+                                onStartQuickShare = { launchQuickShare() },
                                 onChangeTheme = { mode ->
                                     prefs.edit().putString("theme", mode).apply()
                                     themeMode = mode
@@ -376,7 +465,10 @@ class MainActivity : ComponentActivity() {
                                         scope.launch {
                                             val res = LanClient.fetchInfo(parsed.first, parsed.second)
                                             res.onSuccess { info ->
-                                                remoteSession = info to displayName
+                                                val cloudRoom = withContext(Dispatchers.IO) {
+                                                    db.upsertCloudChat(info, displayName)
+                                                }
+                                                activeChatId = cloudRoom.id
                                             }.onFailure {
                                                 Toast.makeText(
                                                     this@MainActivity,
@@ -416,7 +508,11 @@ class MainActivity : ComponentActivity() {
 
                 pendingShareState.value?.let { share ->
                     SharePickerDialog(
-                        chats = chats,
+                        chats = chats.filter { !it.isTemporary },
+                        onQuickShare = {
+                            pendingShareState.value = null
+                            launchQuickShare(share)
+                        },
                         onPickChat = { room ->
                             pendingShareState.value = null
                             scope.launch {
@@ -443,6 +539,54 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onDismiss = { pendingShareState.value = null }
+                    )
+                }
+
+                forwardRequest?.let { req ->
+                    SharePickerDialog(
+                        chats = chats.filter { it.id != req.sourceChatId && !it.isTemporary },
+                        titleText = stringResource(R.string.forward_to_title),
+                        onPickChat = { target ->
+                            forwardRequest = null
+                            scope.launch {
+                                val me = getString(R.string.me_sender)
+                                val ok = withContext(Dispatchers.IO) {
+                                    if (target.isCloudLinked) {
+                                        val tok = target.remoteToken.orEmpty()
+                                        val url = LanDiscovery.resolveToken(tok) ?: target.remoteServerUrl.orEmpty()
+                                        if (url.isBlank() || tok.isBlank()) {
+                                            false
+                                        } else if (req.message.type == MessageType.TEXT || req.message.mediaFileName.isNullOrBlank()) {
+                                            LanClient.sendText(url, tok, req.message.text, target.remoteDisplayName).isSuccess
+                                        } else {
+                                            val f = db.getMediaFile(req.sourceChatId, req.message.mediaFileName)
+                                            if (!f.exists()) false else {
+                                                f.inputStream().use { inp ->
+                                                    LanClient.uploadStream(
+                                                        serverUrl = url,
+                                                        token = tok,
+                                                        fileName = f.name.substringAfter('_', f.name),
+                                                        mime = req.message.mediaMime ?: "application/octet-stream",
+                                                        sender = target.remoteDisplayName,
+                                                        contentLength = f.length(),
+                                                        inputStream = inp
+                                                    ).isSuccess
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        db.forwardMessageToLocalChat(req.sourceChatId, req.message, target.id, me) != null
+                                    }
+                                }
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (ok) getString(R.string.forwarded_ok, target.title)
+                                    else getString(R.string.connection_error),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        onDismiss = { forwardRequest = null }
                     )
                 }
             }

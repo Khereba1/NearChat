@@ -15,7 +15,12 @@ enum class MessageType(val code: String) {
 
 enum class LanPermission(val code: String) {
     VIEWER("VIEWER"),
-    EDITOR("EDITOR")
+    EDITOR("EDITOR");
+
+    companion object {
+        fun fromCode(code: String?): LanPermission =
+            if (code == "VIEWER") VIEWER else EDITOR
+    }
 }
 
 data class ChatRoom(
@@ -29,8 +34,15 @@ data class ChatRoom(
     val editorToken: String,
     val isLanShared: Boolean,
     val lastPreview: String = "",
-    val messageCount: Int = 0
-)
+    val messageCount: Int = 0,
+    val isTemporary: Boolean = false,
+    val remoteServerUrl: String? = null,
+    val remoteToken: String? = null,
+    val remotePermission: LanPermission = LanPermission.EDITOR,
+    val remoteDisplayName: String = "Guest"
+) {
+    val isCloudLinked: Boolean get() = !remoteToken.isNullOrBlank()
+}
 
 data class ChatMessage(
     val id: String,
