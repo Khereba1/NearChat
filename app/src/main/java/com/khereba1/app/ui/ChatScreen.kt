@@ -1191,8 +1191,8 @@ private fun QuickShareSessionCard(
         "WIFI:T:WPA;S:${routerState.p2pSsid};P:${routerState.p2pPass};;"
     } else null
 
-    val wifiBmp = remember(wifiQrText) { wifiQrText?.let { QrGenerator.generate(it, 320)?.asImageBitmap() } }
-    val chatBmp = remember(chatUrl) { QrGenerator.generate(chatUrl, 320)?.asImageBitmap() }
+    val wifiBmp = remember(wifiQrText) { wifiQrText?.let { QrGenerator.generate(it, 320) } }
+    val chatBmp = remember(chatUrl) { QrGenerator.generate(chatUrl, 320) }
 
     Surface(
         color = MaterialTheme.colorScheme.surface,

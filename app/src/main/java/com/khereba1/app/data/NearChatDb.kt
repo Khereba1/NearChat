@@ -635,7 +635,7 @@ class NearChatDb private constructor(context: Context) :
             }
             val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
             val baseName = (displayName ?: "item_${System.currentTimeMillis()}${if (ext != null) ".$ext" else ""}")
-                .replace(Regex("[^A-Za-z0-9._\-\u0600-\u06FF]"), "_")
+                .replace(Regex("[^A-Za-z0-9._\\-\\u0600-\\u06FF]"), "_")
             val uniqueName = "${System.currentTimeMillis()}_$baseName"
             val dest = File(getChatMediaDir(chatId), uniqueName)
 
@@ -669,7 +669,7 @@ class NearChatDb private constructor(context: Context) :
         contentLength: Long,
         senderName: String
     ): ChatMessage {
-        val safeOriginal = File(originalName).name.replace(Regex("[^A-Za-z0-9._\-\u0600-\u06FF]"), "_")
+        val safeOriginal = File(originalName).name.replace(Regex("[^A-Za-z0-9._\\-\\u0600-\\u06FF]"), "_")
         val uniqueName = "${System.currentTimeMillis()}_$safeOriginal"
         val dest = File(getChatMediaDir(chatId), uniqueName)
         FileOutputStream(dest).use { out ->
@@ -702,7 +702,7 @@ class NearChatDb private constructor(context: Context) :
         bytes: ByteArray,
         senderName: String
     ): ChatMessage {
-        val safeOriginal = File(originalName).name.replace(Regex("[^A-Za-z0-9._\-\u0600-\u06FF]"), "_")
+        val safeOriginal = File(originalName).name.replace(Regex("[^A-Za-z0-9._\\-\\u0600-\\u06FF]"), "_")
         val uniqueName = "${System.currentTimeMillis()}_$safeOriginal"
         val dest = File(getChatMediaDir(chatId), uniqueName)
         dest.writeBytes(bytes)
