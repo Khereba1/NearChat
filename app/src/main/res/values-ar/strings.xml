@@ -185,4 +185,26 @@
     <string name="downloading_progress">جاري التحميل %1$d%%…</string>
     <string name="open_file">فتح</string>
     <string name="cannot_open_file">تعذر فتح الملف</string>
+    <string name="pdf_pages_count">%1$d صفحة</string>
+    <string name="recent_media_title">الأخيرة</string>
+    <string name="system_gallery_btn">معرض النظام</string>
+    <string name="send_selected_count">إرسال (%1$d)</string>
+    <string name="attach_photo">صورة</string>
+    <string name="attach_video">فيديو</string>
+    <string name="attach_gallery">المعرض</string>
+    <string name="attach_file">ملف</string>
+    <string name="connected_devices_title">الأجهزة المتصلة</string>
+    <string name="no_connected_devices">لا توجد أجهزة متصلة حالياً</string>
+    <string name="device_limit_btn">الحدود</string>
+    <string name="device_block_btn">حظر</string>
+    <string name="device_unblock_btn">إلغاء الحظر</string>
+    <string name="device_blocked_badge">محظور</string>
+    <string name="quota_mb_label">سقف الاستهلاك (MB، 0 = مفتوح)</string>
+    <string name="speed_kbps_label">سقف السرعة (KB/s، 0 = مفتوح)</string>
+    <string name="reset_usage_btn">تصفير الاستهلاك</string>
+    <string name="storage_manage_title">التخزين والملفات المحمّلة</string>
+    <string name="clear_cloud_cache_all">مسح كل ملفات السحابة المحمّلة</string>
+    <string name="clear_chat_cache">مسح الملفات المحمّلة</string>
+    <string name="cache_cleared_toast">تم تفريغ الملفات المحمّلة</string>
+    <string name="delete_chat_action">حذف الشات</string>
 </resources>

@@ -41,8 +41,12 @@ import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material.icons.rounded.WifiTethering
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.TextButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -85,6 +89,7 @@ import com.khereba1.app.network.QrGenerator
 import com.khereba1.app.network.RootHelper
 import com.khereba1.app.network.RootStatus
 import com.khereba1.app.network.RouterBridgeState
+import com.khereba1.app.network.ConnectedClientInfo
 import com.khereba1.app.network.WifiProxyServer
 import com.khereba1.app.network.XrayOverrides
 import com.khereba1.app.network.XrayTunnelManager
@@ -158,6 +163,8 @@ fun NetworkHubScreen(
     }
 
     val isVpnRunning by NearChatVpnService.isRunning.collectAsState()
+    val connectedClients by WifiProxyServer.clients.collectAsState()
+    var limitTarget by remember { mutableStateOf<ConnectedClientInfo?>(null) }
     val xrayState by XrayTunnelManager.state.collectAsState()
     val supportsDirectHotspot = remember { WifiProxyServer.supportsDirectWifiHotspot(context) }
 
@@ -520,6 +527,85 @@ fun NetworkHubScreen(
                                 }
                             } else if (routerState.p2pError.isNotEmpty()) {
                                 Text(routerState.p2pError, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                            }
+                            // Connected Devices & Quota/Speed Control Card (shown only while Host Router is active)
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                tonalElevation = 2.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "${stringResource(R.string.connected_devices_title)} (${connectedClients.size})",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (connectedClients.isEmpty()) {
+                                        Text(
+                                            text = stringResource(R.string.no_connected_devices),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    } else {
+                                        connectedClients.forEach { client ->
+                                            Surface(
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(10.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Column(modifier = Modifier.weight(1f)) {
+                                                            Text(
+                                                                text = client.ip + if (client.blocked) " (${stringResource(R.string.device_blocked_badge)})" else "",
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = if (client.blocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                                            )
+                                                            val usedMb = String.format(java.util.Locale.US, "%.1f MB", client.bytesUsed / (1024.0 * 1024.0))
+                                                            val speedKbps = client.bytesPerSec / 1024L
+                                                            val limitInfo = buildString {
+                                                                if (client.quotaMb > 0) append(" • Max ${client.quotaMb}MB")
+                                                                if (client.speedLimitKbps > 0) append(" • ${client.speedLimitKbps}KB/s")
+                                                            }
+                                                            Text(
+                                                                text = "$usedMb • ${speedKbps} KB/s$limitInfo",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                        }
+                                                    }
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                        OutlinedButton(
+                                                            onClick = { limitTarget = client },
+                                                            modifier = Modifier.weight(1f)
+                                                        ) {
+                                                            Text(stringResource(R.string.device_limit_btn), maxLines = 1)
+                                                        }
+                                                        OutlinedButton(
+                                                            onClick = { WifiProxyServer.setClientBlocked(client.ip, !client.blocked) },
+                                                            modifier = Modifier.weight(1f)
+                                                        ) {
+                                                            Text(
+                                                                stringResource(if (client.blocked) R.string.device_unblock_btn else R.string.device_block_btn),
+                                                                color = if (client.blocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Button(
                                 onClick = onStopRouter,
@@ -1066,6 +1152,52 @@ fun NetworkHubScreen(
                 }
             }
         }
+    }
+
+    limitTarget?.let { dev ->
+        var quotaStr by remember(dev.ip) { mutableStateOf(if (dev.quotaMb > 0) dev.quotaMb.toString() else "0") }
+        var speedStr by remember(dev.ip) { mutableStateOf(if (dev.speedLimitKbps > 0) dev.speedLimitKbps.toString() else "0") }
+        AlertDialog(
+            onDismissRequest = { limitTarget = null },
+            title = { Text("${stringResource(R.string.device_limit_btn)}: ${dev.ip}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = quotaStr,
+                        onValueChange = { quotaStr = it.filter { ch -> ch.isDigit() } },
+                        label = { Text(stringResource(R.string.quota_mb_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = speedStr,
+                        onValueChange = { speedStr = it.filter { ch -> ch.isDigit() } },
+                        label = { Text(stringResource(R.string.speed_kbps_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(onClick = {
+                        WifiProxyServer.resetClientUsage(dev.ip)
+                        limitTarget = null
+                    }) {
+                        Text(stringResource(R.string.reset_usage_btn))
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    WifiProxyServer.setClientLimits(
+                        dev.ip,
+                        quotaStr.toIntOrNull() ?: 0,
+                        speedStr.toIntOrNull() ?: 0
+                    )
+                    limitTarget = null
+                }) { Text(stringResource(R.string.save)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { limitTarget = null }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
     }
 }
 

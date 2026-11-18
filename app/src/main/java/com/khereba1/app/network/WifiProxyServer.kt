@@ -29,7 +29,18 @@ import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+
+data class ConnectedClientInfo(
+    val ip: String,
+    val bytesUsed: Long = 0L,
+    val bytesPerSec: Long = 0L,
+    val blocked: Boolean = false,
+    val quotaMb: Int = 0,
+    val speedLimitKbps: Int = 0
+)
 
 data class RouterBridgeState(
     val isRunning: Boolean = false,
@@ -57,6 +68,93 @@ object WifiProxyServer {
 
     private val _state = MutableStateFlow(RouterBridgeState())
     val state: StateFlow<RouterBridgeState> = _state
+
+    private class ClientStats(val ip: String) {
+        val bytesUsed = AtomicLong(0L)
+        @Volatile var lastWindowBytes: Long = 0L
+        @Volatile var lastWindowTimeMs: Long = System.currentTimeMillis()
+        @Volatile var bytesPerSec: Long = 0L
+        @Volatile var blocked: Boolean = false
+        @Volatile var quotaMb: Int = 0
+        @Volatile var speedLimitKbps: Int = 0
+        @Volatile var lastSeenMs: Long = System.currentTimeMillis()
+    }
+
+    private val clientMap = ConcurrentHashMap<String, ClientStats>()
+    private val _clients = MutableStateFlow<List<ConnectedClientInfo>>(emptyList())
+    val clients: StateFlow<List<ConnectedClientInfo>> = _clients
+    @Volatile private var lastEmitMs: Long = 0L
+
+    private fun touchClient(ip: String): ClientStats {
+        val st = clientMap.computeIfAbsent(ip) { ClientStats(it) }
+        st.lastSeenMs = System.currentTimeMillis()
+        maybeEmitClients(force = false)
+        return st
+    }
+
+    private fun isClientDenied(ip: String): Boolean {
+        if (ip == "127.0.0.1" || ip == "::1") return false
+        val st = clientMap[ip] ?: return false
+        if (st.blocked) return true
+        if (st.quotaMb > 0 && st.bytesUsed.get() >= st.quotaMb.toLong() * 1024L * 1024L) return true
+        return false
+    }
+
+    private fun recordClientBytes(ip: String, delta: Long) {
+        if (delta <= 0L || ip == "127.0.0.1" || ip == "::1") return
+        val st = touchClient(ip)
+        val total = st.bytesUsed.addAndGet(delta)
+        val now = System.currentTimeMillis()
+        val elapsed = now - st.lastWindowTimeMs
+        if (elapsed >= 1000L) {
+            st.bytesPerSec = ((total - st.lastWindowBytes) * 1000L) / elapsed.coerceAtLeast(1L)
+            st.lastWindowBytes = total
+            st.lastWindowTimeMs = now
+        }
+        maybeEmitClients(force = false)
+    }
+
+    private fun maybeEmitClients(force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastEmitMs < 1000L) return
+        lastEmitMs = now
+        val list = clientMap.values
+            .filter { it.ip != "127.0.0.1" && it.ip != "::1" }
+            .sortedByDescending { it.lastSeenMs }
+            .map { st ->
+                val bps = if (now - st.lastSeenMs > 4000L) 0L else st.bytesPerSec
+                ConnectedClientInfo(
+                    ip = st.ip,
+                    bytesUsed = st.bytesUsed.get(),
+                    bytesPerSec = bps,
+                    blocked = st.blocked,
+                    quotaMb = st.quotaMb,
+                    speedLimitKbps = st.speedLimitKbps
+                )
+            }
+        _clients.value = list
+    }
+
+    fun setClientBlocked(ip: String, blocked: Boolean) {
+        val st = clientMap.computeIfAbsent(ip) { ClientStats(it) }
+        st.blocked = blocked
+        maybeEmitClients(force = true)
+    }
+
+    fun setClientLimits(ip: String, quotaMb: Int, speedLimitKbps: Int) {
+        val st = clientMap.computeIfAbsent(ip) { ClientStats(it) }
+        st.quotaMb = quotaMb.coerceAtLeast(0)
+        st.speedLimitKbps = speedLimitKbps.coerceAtLeast(0)
+        maybeEmitClients(force = true)
+    }
+
+    fun resetClientUsage(ip: String) {
+        val st = clientMap[ip] ?: return
+        st.bytesUsed.set(0L)
+        st.lastWindowBytes = 0L
+        st.bytesPerSec = 0L
+        maybeEmitClients(force = true)
+    }
 
     fun supportsDirectWifiHotspot(context: Context): Boolean {
         return try {
@@ -459,12 +557,15 @@ object WifiProxyServer {
                 }
                 if (cmd != 0x01) return
 
+                val clientIp = c.inetAddress?.hostAddress ?: "unknown"
+                touchClient(clientIp)
+                if (isClientDenied(clientIp)) return
                 openInternetSocket(host, port).use { remote ->
                     outS.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                     outS.flush()
-                    val t1 = Thread { pipe(inS, remote.getOutputStream()) }
+                    val t1 = Thread { pipe(inS, remote.getOutputStream(), clientIp) }
                     t1.start()
-                    pipe(remote.getInputStream(), outS)
+                    pipe(remote.getInputStream(), outS, clientIp)
                     t1.join(3000)
                 }
             } catch (_: Throwable) {
@@ -649,15 +750,18 @@ object WifiProxyServer {
                     }
                 }
 
+                val clientIp = c.inetAddress?.hostAddress ?: "unknown"
+                touchClient(clientIp)
+                if (isClientDenied(clientIp)) return
                 if (method == "CONNECT") {
                     val host = target.substringBefore(":")
                     val port = target.substringAfter(":", "443").toIntOrNull() ?: 443
                     openInternetSocket(host, port).use { remote ->
                         outStream.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
                         outStream.flush()
-                        val t1 = Thread { pipe(inStream, remote.getOutputStream()) }
+                        val t1 = Thread { pipe(inStream, remote.getOutputStream(), clientIp) }
                         t1.start()
-                        pipe(remote.getInputStream(), outStream)
+                        pipe(remote.getInputStream(), outStream, clientIp)
                         t1.join(3000)
                     }
                 } else {
@@ -686,7 +790,7 @@ object WifiProxyServer {
                             }
                         }
                         rOut.flush()
-                        pipe(remote.getInputStream(), outStream)
+                        pipe(remote.getInputStream(), outStream, clientIp)
                     }
                 }
             } catch (_: Throwable) {
@@ -694,13 +798,27 @@ object WifiProxyServer {
         }
     }
 
-    private fun pipe(input: InputStream, output: OutputStream) {
+    private fun pipe(input: InputStream, output: OutputStream, clientIp: String = "") {
         try {
-            val buf = ByteArray(65536)
+            val buf = ByteArray(32768)
             while (true) {
+                if (clientIp.isNotEmpty() && isClientDenied(clientIp)) break
+                val startNs = System.nanoTime()
                 val n = input.read(buf)
                 if (n <= 0) break
                 output.write(buf, 0, n)
+                if (clientIp.isNotEmpty()) {
+                    recordClientBytes(clientIp, n.toLong())
+                    val limitKbps = clientMap[clientIp]?.speedLimitKbps ?: 0
+                    if (limitKbps > 0) {
+                        val expectedMs = (n.toLong() * 1000L) / (limitKbps.toLong() * 1024L).coerceAtLeast(1L)
+                        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+                        val sleepMs = expectedMs - elapsedMs
+                        if (sleepMs > 0L) {
+                            Thread.sleep(sleepMs.coerceAtMost(500L))
+                        }
+                    }
+                }
             }
             output.flush()
         } catch (_: Throwable) {

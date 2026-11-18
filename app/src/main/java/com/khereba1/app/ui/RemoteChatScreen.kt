@@ -37,12 +37,15 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -100,6 +103,8 @@ fun RemoteChatScreen(
     onSyncMessages: (List<ChatMessage>) -> Unit,
     onSaveToGallery: (File, String?) -> Unit,
     onForwardMessage: (ChatMessage) -> Unit,
+    onClearCache: () -> Unit = {},
+    onDeleteChat: () -> Unit = {},
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -118,6 +123,9 @@ fun RemoteChatScreen(
     var viewingImageFile by remember { mutableStateOf<File?>(null) }
     var viewingVideoFile by remember { mutableStateOf<File?>(null) }
     var streamingVideoUrl by remember { mutableStateOf<String?>(null) }
+    var viewingPdfFile by remember { mutableStateOf<File?>(null) }
+    var viewingTextFile by remember { mutableStateOf<File?>(null) }
+    var topMenuOpen by remember { mutableStateOf(false) }
     var downloadBump by remember { mutableStateOf(0) }
 
     LaunchedEffect(discoveredUrl) {
@@ -247,6 +255,28 @@ fun RemoteChatScreen(
                 actions = {
                     IconButton(onClick = { scope.launch { refreshFromHost() } }) {
                         Icon(Icons.Rounded.Refresh, contentDescription = null)
+                    }
+                    Box {
+                        IconButton(onClick = { topMenuOpen = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = null)
+                        }
+                        DropdownMenu(expanded = topMenuOpen, onDismissRequest = { topMenuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.clear_chat_cache)) },
+                                onClick = {
+                                    topMenuOpen = false
+                                    onClearCache()
+                                    downloadBump++
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.delete_chat_action), color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    topMenuOpen = false
+                                    onDeleteChat()
+                                }
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -449,9 +479,11 @@ fun RemoteChatScreen(
                                             if (isDownloaded && localFile != null) {
                                                 Button(
                                                     onClick = {
-                                                        when (m.type) {
-                                                            MessageType.IMAGE -> viewingImageFile = localFile
-                                                            MessageType.VIDEO -> viewingVideoFile = localFile
+                                                        when {
+                                                            m.type == MessageType.IMAGE -> viewingImageFile = localFile
+                                                            m.type == MessageType.VIDEO -> viewingVideoFile = localFile
+                                                            isPdfFile(localFile.name) -> viewingPdfFile = localFile
+                                                            isTextOrCodeFile(localFile.name) -> viewingTextFile = localFile
                                                             else -> openExternalLocalFile(localFile, m.mediaMime)
                                                         }
                                                     },
@@ -541,6 +573,22 @@ fun RemoteChatScreen(
             streamUrl = url,
             onOpenExternal = { openExternalStream(url, "video/*") },
             onDismiss = { streamingVideoUrl = null }
+        )
+    }
+    viewingPdfFile?.let { f ->
+        InAppPdfViewerDialog(
+            file = f,
+            onOpenExternal = { openExternalLocalFile(f, "application/pdf") },
+            onSaveToGallery = { onSaveToGallery(f, "application/pdf") },
+            onDismiss = { viewingPdfFile = null }
+        )
+    }
+    viewingTextFile?.let { f ->
+        InAppTextViewerDialog(
+            file = f,
+            onOpenExternal = { openExternalLocalFile(f, "text/plain") },
+            onSaveToGallery = { onSaveToGallery(f, "text/plain") },
+            onDismiss = { viewingTextFile = null }
         )
     }
 

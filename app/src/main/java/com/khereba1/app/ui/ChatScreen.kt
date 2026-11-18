@@ -155,7 +155,8 @@ fun ChatScreen(
     routerState: RouterBridgeState = RouterBridgeState(),
     onEndQuickShare: (() -> Unit)? = null,
     onSaveToGallery: (File, String?) -> Unit = { _, _ -> },
-    onForwardMessage: (ChatMessage) -> Unit = {}
+    onForwardMessage: (ChatMessage) -> Unit = {},
+    onDeleteChat: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -165,6 +166,9 @@ fun ChatScreen(
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var viewImageFile by remember { mutableStateOf<File?>(null) }
     var playVideoFile by remember { mutableStateOf<File?>(null) }
+    var viewPdfFile by remember { mutableStateOf<File?>(null) }
+    var viewTextFile by remember { mutableStateOf<File?>(null) }
+    var topMenuOpen by remember { mutableStateOf(false) }
 
     val playbackState by AudioPlayerManager.state.collectAsState()
     val listState = rememberLazyListState()
@@ -243,6 +247,23 @@ fun ChatScreen(
                             tint = if (room.isLanShared) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurface
                         )
+                    }
+                    if (!room.isTemporary && onDeleteChat != null) {
+                        Box {
+                            IconButton(onClick = { topMenuOpen = true }) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = null)
+                            }
+                            DropdownMenu(expanded = topMenuOpen, onDismissRequest = { topMenuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.delete_chat_action), color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = { Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                    onClick = {
+                                        topMenuOpen = false
+                                        onDeleteChat()
+                                    }
+                                )
+                            }
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -480,9 +501,11 @@ fun ChatScreen(
                                 onSeekAudio = { pos -> AudioPlayerManager.seekTo(pos) },
                                 onOpenMedia = {
                                     if (file != null) {
-                                        when (msg.type) {
-                                            MessageType.IMAGE -> viewImageFile = file
-                                            MessageType.VIDEO -> playVideoFile = file
+                                        when {
+                                            msg.type == MessageType.IMAGE -> viewImageFile = file
+                                            msg.type == MessageType.VIDEO -> playVideoFile = file
+                                            isPdfFile(file.name) -> viewPdfFile = file
+                                            isTextOrCodeFile(file.name) -> viewTextFile = file
                                             else -> openFileExternally(context, file, msg.mediaMime)
                                         }
                                     }
@@ -528,14 +551,37 @@ fun ChatScreen(
     }
 
     viewImageFile?.let { f ->
-        InAppImageViewerDialog(file = f, onDismiss = { viewImageFile = null })
+        InAppImageViewerDialog(
+            file = f,
+            onSaveToGallery = { onSaveToGallery(f, "image/*") },
+            onDismiss = { viewImageFile = null }
+        )
     }
 
     playVideoFile?.let { f ->
         InAppVideoPlayerDialog(
             file = f,
             onOpenExternal = { openFileExternally(context, f, "video/*") },
+            onSaveToGallery = { onSaveToGallery(f, "video/*") },
             onDismiss = { playVideoFile = null }
+        )
+    }
+
+    viewPdfFile?.let { f ->
+        InAppPdfViewerDialog(
+            file = f,
+            onOpenExternal = { openFileExternally(context, f, "application/pdf") },
+            onSaveToGallery = { onSaveToGallery(f, "application/pdf") },
+            onDismiss = { viewPdfFile = null }
+        )
+    }
+
+    viewTextFile?.let { f ->
+        InAppTextViewerDialog(
+            file = f,
+            onOpenExternal = { openFileExternally(context, f, "text/plain") },
+            onSaveToGallery = { onSaveToGallery(f, "text/plain") },
+            onDismiss = { viewTextFile = null }
         )
     }
 

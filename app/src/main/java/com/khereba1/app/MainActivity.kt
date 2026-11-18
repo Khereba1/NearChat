@@ -31,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.khereba1.app.data.ChatMessage
 import com.khereba1.app.data.ChatRoom
 import com.khereba1.app.data.MessageType
@@ -45,6 +46,7 @@ import com.khereba1.app.network.WifiProxyServer
 import com.khereba1.app.ui.BluetoothChatScreen
 import com.khereba1.app.ui.ChatScreen
 import com.khereba1.app.ui.HomeScreen
+import com.khereba1.app.ui.MediaAttachBottomSheet
 import com.khereba1.app.ui.NetworkHubScreen
 import com.khereba1.app.ui.RemoteChatScreen
 import com.khereba1.app.ui.SharePickerDialog
@@ -119,6 +121,8 @@ class MainActivity : ComponentActivity() {
                 var showNetworkHub by remember { mutableStateOf(false) }
                 var isRecording by remember { mutableStateOf(false) }
                 var forwardRequest by remember { mutableStateOf<ForwardRequest?>(null) }
+                var showAttachSheet by remember { mutableStateOf(false) }
+                var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
 
                 var currentLang by remember { mutableStateOf(prefs.getString("lang", "system") ?: "system") }
 
@@ -166,6 +170,51 @@ class MainActivity : ComponentActivity() {
                             db.saveUriToChat(chatId, u, me)
                         }
                     }
+                }
+
+                val galleryPicker = rememberLauncherForActivityResult(
+                    ActivityResultContracts.GetMultipleContents()
+                ) { uris ->
+                    val chatId = activeChatId ?: return@rememberLauncherForActivityResult
+                    if (uris.isEmpty()) return@rememberLauncherForActivityResult
+                    scope.launch(Dispatchers.IO) {
+                        val me = getString(R.string.me_sender)
+                        for (u in uris) {
+                            db.saveUriToChat(chatId, u, me)
+                        }
+                    }
+                }
+
+                val takePhotoLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.TakePicture()
+                ) { ok ->
+                    val uri = pendingCameraUri
+                    val chatId = activeChatId
+                    pendingCameraUri = null
+                    if (ok && uri != null && chatId != null) {
+                        scope.launch(Dispatchers.IO) {
+                            db.saveUriToChat(chatId, uri, getString(R.string.me_sender))
+                        }
+                    }
+                }
+
+                val captureVideoLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CaptureVideo()
+                ) { ok ->
+                    val uri = pendingCameraUri
+                    val chatId = activeChatId
+                    pendingCameraUri = null
+                    if (ok && uri != null && chatId != null) {
+                        scope.launch(Dispatchers.IO) {
+                            db.saveUriToChat(chatId, uri, getString(R.string.me_sender))
+                        }
+                    }
+                }
+
+                fun createTempCaptureUri(ext: String): Uri {
+                    val dir = File(cacheDir, "captures").apply { mkdirs() }
+                    val f = File(dir, "capture_${System.currentTimeMillis()}.$ext")
+                    return FileProvider.getUriForFile(this@MainActivity, "${packageName}.fileprovider", f)
                 }
 
                 fun launchQuickShare(share: PendingShare? = null) {
@@ -293,6 +342,14 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onSaveToGallery = { f, mime -> handleSaveToGallery(f, mime) },
                                 onForwardMessage = { msg -> forwardRequest = ForwardRequest(cloudRoom.id, msg) },
+                                onClearCache = {
+                                    scope.launch(Dispatchers.IO) { db.clearChatLocalMedia(cloudRoom.id) }
+                                    Toast.makeText(this@MainActivity, getString(R.string.cache_cleared_toast), Toast.LENGTH_SHORT).show()
+                                },
+                                onDeleteChat = {
+                                    activeChatId = null
+                                    scope.launch(Dispatchers.IO) { db.deleteChat(cloudRoom.id) }
+                                },
                                 onBack = { activeChatId = null }
                             )
                         }
@@ -326,7 +383,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onPickAttachments = {
-                                    attachmentPicker.launch(arrayOf("*/*"))
+                                    showAttachSheet = true
                                 },
                                 onStartRecording = {
                                     val hasPerm = ContextCompat.checkSelfPermission(
@@ -416,7 +473,11 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onSaveToGallery = { f, mime -> handleSaveToGallery(f, mime) },
-                                onForwardMessage = { msg -> forwardRequest = ForwardRequest(activeRoom.id, msg) }
+                                onForwardMessage = { msg -> forwardRequest = ForwardRequest(activeRoom.id, msg) },
+                                onDeleteChat = {
+                                    activeChatId = null
+                                    scope.launch(Dispatchers.IO) { db.deleteChat(activeRoom.id) }
+                                }
                             )
                         }
 
@@ -430,6 +491,17 @@ class MainActivity : ComponentActivity() {
                                 themeMode = themeMode,
                                 discoveredHosts = discoveredHosts,
                                 onStartQuickShare = { launchQuickShare() },
+                                getChatCacheBytes = { id -> db.getChatMediaBytes(id) },
+                                onClearChatCache = { id ->
+                                    scope.launch(Dispatchers.IO) { db.clearChatLocalMedia(id) }
+                                    Toast.makeText(this@MainActivity, getString(R.string.cache_cleared_toast), Toast.LENGTH_SHORT).show()
+                                },
+                                onClearAllCloudCache = {
+                                    scope.launch(Dispatchers.IO) {
+                                        chats.filter { it.isCloudLinked }.forEach { db.clearChatLocalMedia(it.id) }
+                                    }
+                                    Toast.makeText(this@MainActivity, getString(R.string.cache_cleared_toast), Toast.LENGTH_SHORT).show()
+                                },
                                 onChangeTheme = { mode ->
                                     prefs.edit().putString("theme", mode).apply()
                                     themeMode = mode
@@ -539,6 +611,37 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onDismiss = { pendingShareState.value = null }
+                    )
+                }
+
+                if (showAttachSheet && activeChatId != null) {
+                    val targetId = activeChatId!!
+                    MediaAttachBottomSheet(
+                        onSendUris = { uris ->
+                            scope.launch(Dispatchers.IO) {
+                                val me = getString(R.string.me_sender)
+                                for (u in uris) {
+                                    db.saveUriToChat(targetId, u, me)
+                                }
+                            }
+                        },
+                        onOpenSystemGallery = { galleryPicker.launch("*/*") },
+                        onOpenCameraPhoto = {
+                            runCatching {
+                                val uri = createTempCaptureUri("jpg")
+                                pendingCameraUri = uri
+                                takePhotoLauncher.launch(uri)
+                            }
+                        },
+                        onOpenCameraVideo = {
+                            runCatching {
+                                val uri = createTempCaptureUri("mp4")
+                                pendingCameraUri = uri
+                                captureVideoLauncher.launch(uri)
+                            }
+                        },
+                        onOpenFileManager = { attachmentPicker.launch(arrayOf("*/*")) },
+                        onDismiss = { showAttachSheet = false }
                     )
                 }
 

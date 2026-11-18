@@ -44,6 +44,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -96,7 +97,10 @@ fun HomeScreen(
     onOpenNetworkHub: () -> Unit,
     onChangeLanguage: (String) -> Unit,
     discoveredHosts: Map<String, String> = emptyMap(),
-    onStartQuickShare: () -> Unit = {}
+    onStartQuickShare: () -> Unit = {},
+    getChatCacheBytes: (String) -> Long = { 0L },
+    onClearChatCache: (String) -> Unit = {},
+    onClearAllCloudCache: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
@@ -344,9 +348,13 @@ fun HomeScreen(
 
     if (showSettingsDialog) {
         SettingsDialog(
+            chats = chats,
             storageBytes = storageBytes,
             currentLang = currentLang,
             themeMode = themeMode,
+            getChatCacheBytes = getChatCacheBytes,
+            onClearChatCache = onClearChatCache,
+            onClearAllCloudCache = onClearAllCloudCache,
             onChangeTheme = onChangeTheme,
             onChangeLanguage = onChangeLanguage,
             onDismiss = { showSettingsDialog = false }
@@ -632,9 +640,13 @@ private fun JoinLanDialog(
 
 @Composable
 private fun SettingsDialog(
+    chats: List<ChatRoom>,
     storageBytes: Long,
     currentLang: String,
     themeMode: String,
+    getChatCacheBytes: (String) -> Long,
+    onClearChatCache: (String) -> Unit,
+    onClearAllCloudCache: () -> Unit,
     onChangeTheme: (String) -> Unit,
     onChangeLanguage: (String) -> Unit,
     onDismiss: () -> Unit
@@ -660,6 +672,45 @@ private fun SettingsDialog(
                     text = "${stringResource(R.string.storage_used)}: $mbText",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                val cloudChats = remember(chats) { chats.filter { it.isCloudLinked } }
+                if (cloudChats.isNotEmpty()) {
+                    Text(
+                        text = stringResource(R.string.storage_manage_title),
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    OutlinedButton(
+                        onClick = onClearAllCloudCache,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.clear_cloud_cache_all))
+                    }
+                    cloudChats.forEach { c ->
+                        val cBytes = getChatCacheBytes(c.id)
+                        if (cBytes > 0L) {
+                            val cMb = String.format(Locale.US, "%.1f MB", cBytes / (1024.0 * 1024.0))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${c.title} ($cMb)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                IconButton(
+                                    onClick = { onClearChatCache(c.id) },
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(Icons.Rounded.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
+                }
                 Text(
                     text = stringResource(R.string.theme_label),
                     fontWeight = FontWeight.SemiBold

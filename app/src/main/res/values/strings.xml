@@ -189,4 +189,26 @@
     <string name="downloading_progress">Downloading %1$d%%…</string>
     <string name="open_file">Open</string>
     <string name="cannot_open_file">Cannot open file</string>
+    <string name="pdf_pages_count">%1$d pages</string>
+    <string name="recent_media_title">Recent</string>
+    <string name="system_gallery_btn">System gallery</string>
+    <string name="send_selected_count">Send (%1$d)</string>
+    <string name="attach_photo">Photo</string>
+    <string name="attach_video">Video</string>
+    <string name="attach_gallery">Gallery</string>
+    <string name="attach_file">File</string>
+    <string name="connected_devices_title">Connected Devices</string>
+    <string name="no_connected_devices">No devices connected yet</string>
+    <string name="device_limit_btn">Limits</string>
+    <string name="device_block_btn">Block</string>
+    <string name="device_unblock_btn">Unblock</string>
+    <string name="device_blocked_badge">Blocked</string>
+    <string name="quota_mb_label">Data limit (MB, 0 = unlimited)</string>
+    <string name="speed_kbps_label">Speed limit (KB/s, 0 = unlimited)</string>
+    <string name="reset_usage_btn">Reset usage</string>
+    <string name="storage_manage_title">Storage &amp; Cache</string>
+    <string name="clear_cloud_cache_all">Clear all cloud downloads</string>
+    <string name="clear_chat_cache">Clear downloaded files</string>
+    <string name="cache_cleared_toast">Downloaded files cleared</string>
+    <string name="delete_chat_action">Delete chat</string>
 </resources>
