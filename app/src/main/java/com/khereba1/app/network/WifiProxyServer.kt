@@ -452,28 +452,46 @@ object WifiProxyServer {
         }
     }
 
+    private fun isUpstreamUsable(): Boolean {
+        if (upstreamHost.isEmpty() || upstreamPort !in 1..65535) return false
+        if ((upstreamHost == "127.0.0.1" || upstreamHost == "localhost") &&
+            upstreamPort == XrayTunnelManager.LOCAL_SOCKS_PORT &&
+            !XrayTunnelManager.state.value.isRunning
+        ) {
+            return false
+        }
+        return true
+    }
+
     private fun activeInternetNetwork(): Network? {
         val ctx = appContext ?: return null
         return try {
             val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             @Suppress("DEPRECATION")
             val allNets = cm.allNetworks
-            var fallback: Network? = null
+            var best: Network? = null
+            var bestScore = -1
             for (net in allNets) {
                 val caps = cm.getNetworkCapabilities(net) ?: continue
                 if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
                 if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return net
-                if (fallback == null) fallback = net
+                var score = 0
+                if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) score += 100
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) score += 20
+                else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) score += 10
+                if (score > bestScore) {
+                    bestScore = score
+                    best = net
+                }
             }
-            fallback
+            best
         } catch (_: Throwable) {
             null
         }
     }
 
     private fun openInternetSocket(host: String, port: Int): Socket {
-        if (upstreamHost.isNotEmpty() && upstreamPort in 1..65535) {
+        if (isUpstreamUsable()) {
             return openViaUpstreamSocks5(upstreamHost, upstreamPort, host, port)
         }
         val net = activeInternetNetwork()
@@ -641,7 +659,7 @@ object WifiProxyServer {
      * tunnel (sing-box) so Wi-Fi Direct hotspot clients get working DNS even when UDP is blocked.
      */
     private fun queryDnsOverUpstreamTcp(dnsServerIp: String, queryPayload: ByteArray): ByteArray? {
-        if (upstreamHost.isEmpty() || upstreamPort !in 1..65535) return null
+        if (!isUpstreamUsable()) return null
         return try {
             openViaUpstreamSocks5(upstreamHost, upstreamPort, dnsServerIp, 53).use { s ->
                 s.soTimeout = 5000
@@ -755,7 +773,7 @@ object WifiProxyServer {
                 val payloadLen = len - offset
                 if (payloadLen <= 0) continue
 
-                if (dstPort == 53 && upstreamHost.isNotEmpty() && upstreamPort in 1..65535) {
+                if (dstPort == 53 && isUpstreamUsable()) {
                     val dnsQuery = buf.copyOfRange(offset, offset + payloadLen)
                     val srcIp = dstAddr.address
                     pool?.execute {

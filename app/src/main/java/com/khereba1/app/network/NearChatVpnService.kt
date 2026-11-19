@@ -281,11 +281,14 @@ class NearChatVpnService : VpnService() {
                 builder.setMetered(false)
             }
 
-            val phys = PhysicalNetwork.current(this)
-            if (phys != null) {
-                try {
-                    builder.setUnderlyingNetworks(arrayOf(phys.network))
-                } catch (_: Throwable) {
+            val isLanTarget = hostIp != "127.0.0.1" && hostIp != "localhost"
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val targetNet = if (isLanTarget) findWifiNetwork(cm) ?: PhysicalNetwork.current(this)?.network
+            else PhysicalNetwork.current(this)?.network
+            if (targetNet != null) {
+                runCatching { builder.setUnderlyingNetworks(arrayOf(targetNet)) }
+                if (isLanTarget) {
+                    runCatching { cm?.bindProcessToNetwork(targetNet) }
                 }
             }
 
@@ -335,14 +338,35 @@ class NearChatVpnService : VpnService() {
 
     private fun refreshUnderlyingNetwork() {
         if (tunFd == null) return
-        val phys = PhysicalNetwork.current(this) ?: return
-        try {
-            setUnderlyingNetworks(arrayOf(phys.network))
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val net = if (!isNekoCoreMode) {
+            findWifiNetwork(cm) ?: PhysicalNetwork.current(this)?.network
+        } else {
+            PhysicalNetwork.current(this)?.network
+        } ?: return
+        runCatching { setUnderlyingNetworks(arrayOf(net)) }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun findWifiNetwork(cm: ConnectivityManager?): Network? {
+        if (cm == null) return null
+        return try {
+            for (n in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(n) ?: continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return n
+            }
+            null
         } catch (_: Throwable) {
+            null
         }
     }
 
     private fun stopTunnel() {
+        runCatching {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            cm?.bindProcessToNetwork(null)
+        }
         PhysicalNetwork.unwatch(this, netCallback)
         netCallback = null
         try {
