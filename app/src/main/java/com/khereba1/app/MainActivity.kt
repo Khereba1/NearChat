@@ -147,7 +147,9 @@ class MainActivity : ComponentActivity() {
                 val routerPermLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { _ ->
-                    WifiProxyServer.start(this@MainActivity)
+                    scope.launch(Dispatchers.IO) {
+                        WifiProxyServer.start(this@MainActivity)
+                    }
                 }
 
                 val btPermLauncher = rememberLauncherForActivityResult(

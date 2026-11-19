@@ -92,11 +92,13 @@ class NearChatVpnService : VpnService() {
                 putExtra(EXTRA_HOST_IP, "127.0.0.1")
                 putExtra(EXTRA_SOCKS_PORT, XrayTunnelManager.LOCAL_SOCKS_PORT)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
-            }
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
+            }.onFailure { AppLog.log("VPN", "Service start blocked: ${it.message}") }
         }
 
         fun start(context: Context, hostIp: String, socksPort: Int = 1080) {
@@ -106,17 +108,24 @@ class NearChatVpnService : VpnService() {
                 putExtra(EXTRA_HOST_IP, hostIp)
                 putExtra(EXTRA_SOCKS_PORT, socksPort)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
-            }
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
+            }.onFailure { AppLog.log("VPN", "Service start blocked: ${it.message}") }
         }
 
         fun stop(context: Context) {
             val appContext = context.applicationContext
+            val cur = instance
+            if (cur != null) {
+                runCatching { cur.stopFromCaller() }
+                return
+            }
             val intent = Intent(appContext, NearChatVpnService::class.java).setAction(ACTION_STOP)
-            appContext.startService(intent)
+            runCatching { appContext.startService(intent) }
         }
     }
 
@@ -264,6 +273,16 @@ class NearChatVpnService : VpnService() {
         }
     }
 
+    fun stopFromCaller() {
+        val wasNeko = isNekoCoreMode
+        stopTunnel()
+        if (wasNeko) {
+            runCatching { XrayTunnelManager.stop() }
+        }
+        stopSelf()
+    }
+
+    @Synchronized
     private fun startManualTunnel(hostIp: String, socksPort: Int, configureIntent: PendingIntent) {
         stopTunnel()
         try {
@@ -273,8 +292,8 @@ class NearChatVpnService : VpnService() {
                 .setMtu(1500)
                 .addAddress("10.10.10.2", 24)
                 .addRoute("0.0.0.0", 0)
-                .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1")
+                .addDnsServer("8.8.8.8")
                 .addDisallowedApplication(packageName)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -283,12 +302,17 @@ class NearChatVpnService : VpnService() {
 
             val isLanTarget = hostIp != "127.0.0.1" && hostIp != "localhost"
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            val targetNet = if (isLanTarget) findWifiNetwork(cm) ?: PhysicalNetwork.current(this)?.network
-            else PhysicalNetwork.current(this)?.network
-            if (targetNet != null) {
-                runCatching { builder.setUnderlyingNetworks(arrayOf(targetNet)) }
-                if (isLanTarget) {
-                    runCatching { cm?.bindProcessToNetwork(targetNet) }
+            if (isLanTarget) {
+                // Bind this app's sockets to Wi-Fi so hev-socks5-tunnel always reaches 192.168.49.1:1080
+                // Do NOT pass an unvalidated "No internet" Wi-Fi to setUnderlyingNetworks, or Android marks VPN offline!
+                val wifiNet = findWifiNetwork(cm)
+                if (wifiNet != null) {
+                    runCatching { cm?.bindProcessToNetwork(wifiNet) }
+                }
+            } else {
+                val phys = PhysicalNetwork.current(this)
+                if (phys != null) {
+                    runCatching { builder.setUnderlyingNetworks(arrayOf(phys.network)) }
                 }
             }
 
@@ -303,21 +327,21 @@ class NearChatVpnService : VpnService() {
 
             val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val socksPass = prefs.getString("vpn_proxy_pass", "")?.trim().orEmpty()
-            val authLines = if (socksPass.isNotEmpty()) {
-                "\n  username: 'nearchat'\n  password: '${socksPass.replace("'", "")}'"
-            } else ""
+            val yaml = buildString {
+                appendLine("tunnel:")
+                appendLine("  mtu: 1500")
+                appendLine("  ipv4: 10.10.10.1")
+                appendLine("socks5:")
+                appendLine("  port: $socksPort")
+                appendLine("  address: $hostIp")
+                appendLine("  udp: 'udp'")
+                if (socksPass.isNotEmpty()) {
+                    appendLine("  username: 'nearchat'")
+                    appendLine("  password: '${socksPass.replace("'", "")}'")
+                }
+            }
             val configFile = File(filesDir, "tproxy.yml")
-            configFile.writeText(
-                """
-                tunnel:
-                  mtu: 1500
-                  ipv4: 10.10.10.1
-                socks5:
-                  port: $socksPort
-                  address: $hostIp
-                  udp: 'udp'$authLines
-                """.trimIndent()
-            )
+            configFile.writeText(yaml)
 
             val ok = TProxyService.TProxyStartService(configFile.absolutePath, pfd.fd)
             _isRunning.value = ok
@@ -337,14 +361,9 @@ class NearChatVpnService : VpnService() {
     }
 
     private fun refreshUnderlyingNetwork() {
-        if (tunFd == null) return
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        val net = if (!isNekoCoreMode) {
-            findWifiNetwork(cm) ?: PhysicalNetwork.current(this)?.network
-        } else {
-            PhysicalNetwork.current(this)?.network
-        } ?: return
-        runCatching { setUnderlyingNetworks(arrayOf(net)) }
+        if (tunFd == null || !isNekoCoreMode) return
+        val phys = PhysicalNetwork.current(this) ?: return
+        runCatching { setUnderlyingNetworks(arrayOf(phys.network)) }
     }
 
     @Suppress("DEPRECATION")
@@ -362,6 +381,7 @@ class NearChatVpnService : VpnService() {
         }
     }
 
+    @Synchronized
     private fun stopTunnel() {
         runCatching {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager

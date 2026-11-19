@@ -44,10 +44,12 @@ class LanShareService : Service() {
         fun start(context: Context) {
             val appContext = context.applicationContext
             val intent = Intent(appContext, LanShareService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
             }
         }
 
@@ -64,10 +66,12 @@ class LanShareService : Service() {
         fun startWatcher(context: Context) {
             val appContext = context.applicationContext
             val intent = Intent(appContext, LanShareService::class.java).setAction(ACTION_START_WATCHER)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                appContext.startForegroundService(intent)
-            } else {
-                appContext.startService(intent)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    appContext.startForegroundService(intent)
+                } else {
+                    appContext.startService(intent)
+                }
             }
         }
 

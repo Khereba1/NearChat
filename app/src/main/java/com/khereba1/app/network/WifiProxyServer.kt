@@ -23,6 +23,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -525,7 +526,7 @@ object WifiProxyServer {
         val sock = if (net != null) {
             try {
                 val s = net.socketFactory.createSocket()
-                val resolved = runCatching { net.getAllByName(host).firstOrNull() }.getOrNull()
+                val resolved = runCatching { val all = net.getAllByName(host); all.firstOrNull { it is Inet4Address } ?: all.firstOrNull() }.getOrNull()
                 if (resolved != null) {
                     s.connect(InetSocketAddress(resolved, port), 10_000)
                 } else {
@@ -684,7 +685,8 @@ object WifiProxyServer {
                     pipe(remote.getInputStream(), outS, clientIp)
                     t1.join(3000)
                 }
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
+                AppLog.log("PROXY", "SOCKS5 error: ${e.message}")
             }
         }
     }
@@ -918,7 +920,8 @@ object WifiProxyServer {
                         pipe(remote.getInputStream(), outStream, clientIp)
                     }
                 }
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
+                AppLog.log("PROXY", "HTTP proxy error: ${e.message}")
             }
         }
     }
