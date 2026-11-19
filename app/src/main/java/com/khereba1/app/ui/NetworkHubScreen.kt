@@ -342,7 +342,7 @@ fun NetworkHubScreen(
                                             style = MaterialTheme.typography.labelSmall,
                                             color = if (rootStatus.hasSuBinary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                         )
-                                        if (rootStatus.hasSuBinary && !rootStatus.rootGranted) {
+                                        if (!rootStatus.rootGranted) {
                                             OutlinedButton(
                                                 onClick = {
                                                     scope.launch {

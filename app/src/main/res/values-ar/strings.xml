@@ -131,6 +131,11 @@
     <string name="root_detected">تم اكتشاف روت (su متاح)</string>
     <string name="root_not_detected">الوضع العادي (بدون روت)</string>
     <string name="root_verify">تفعيل صلاحية الروت</string>
+    <string name="root_section_title">صلاحية الروت</string>
+    <string name="root_checking">جاري فحص الروت… وافق على الطلب لو ظهر</string>
+    <string name="root_not_granted">الروت غير مُفعّل لتطبيق NearChat</string>
+    <string name="net_diag_button">اختبار مسار الإنترنت (شغّله على الجهاز اللي بيعمل البث)</string>
+    <string name="net_diag_running">جاري الاختبار…</string>
     <string name="root_verified">صلاحية الروت مفعّلة</string>
     <string name="root_apply_proxy">تطبيق البروكسي على النظام (روت)</string>
     <string name="root_clear_proxy">إلغاء بروكسي النظام (روت)</string>

@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,7 +73,13 @@ import com.khereba1.app.R
 import com.khereba1.app.data.ChatRoom
 import com.khereba1.app.network.LanDiscovery
 import com.khereba1.app.network.LanServerState
+import com.khereba1.app.network.RootHelper
+import com.khereba1.app.network.RootStatus
 import com.khereba1.app.network.RouterBridgeState
+import com.khereba1.app.network.WifiProxyServer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.khereba1.app.ui.theme.ChatAccentColors
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -652,6 +659,12 @@ private fun SettingsDialog(
     onDismiss: () -> Unit
 ) {
     var logText by remember { mutableStateOf(AppLog.read()) }
+    val rootScope = rememberCoroutineScope()
+    var rootStatus by remember { mutableStateOf(RootStatus()) }
+    var rootBusy by remember { mutableStateOf(false) }
+    val diagContext = androidx.compose.ui.platform.LocalContext.current
+    var diagText by remember { mutableStateOf("") }
+    var diagBusy by remember { mutableStateOf(false) }
     val mbText = remember(storageBytes) {
         String.format(Locale.US, "%.2f MB", storageBytes / (1024.0 * 1024.0))
     }
@@ -748,6 +761,60 @@ private fun SettingsDialog(
                         RadioButton(selected = currentLang == code, onClick = { onChangeLanguage(code) })
                         Text(label)
                     }
+                }
+                Text(
+                    text = stringResource(R.string.root_section_title),
+                    fontWeight = FontWeight.SemiBold
+                )
+                OutlinedButton(
+                    onClick = {
+                        if (!rootBusy) {
+                            rootBusy = true
+                            rootScope.launch {
+                                rootStatus = RootHelper.requestRootAccess()
+                                rootBusy = false
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(if (rootBusy) R.string.root_checking else R.string.root_verify))
+                }
+                if (rootStatus.checked) {
+                    Text(
+                        text = stringResource(
+                            if (rootStatus.rootGranted) R.string.root_verified else R.string.root_not_granted
+                        ) + "\n" + rootStatus.detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (rootStatus.rootGranted) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        if (!diagBusy) {
+                            diagBusy = true
+                            rootScope.launch {
+                                val report = withContext(Dispatchers.IO) {
+                                    runCatching { WifiProxyServer.diagnoseInternet(diagContext) }
+                                        .getOrElse { "Diagnostics failed: ${it.message}" }
+                                }
+                                diagText = report
+                                AppLog.log("DIAG", report)
+                                diagBusy = false
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(if (diagBusy) R.string.net_diag_running else R.string.net_diag_button))
+                }
+                if (diagText.isNotEmpty()) {
+                    Text(
+                        text = diagText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),

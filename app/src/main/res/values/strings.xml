@@ -135,6 +135,11 @@
     <string name="root_detected">Root Detected (su available)</string>
     <string name="root_not_detected">Standard Mode (No Root)</string>
     <string name="root_verify">Verify Root Access</string>
+    <string name="net_diag_button">Test internet route (run on the broadcasting device)</string>
+    <string name="net_diag_running">Testing…</string>
+    <string name="root_section_title">Root access</string>
+    <string name="root_checking">Checking root… approve the request if it appears</string>
+    <string name="root_not_granted">Root not granted to NearChat</string>
     <string name="root_verified">Root Access Granted</string>
     <string name="root_apply_proxy">Apply System Proxy (Root)</string>
     <string name="root_clear_proxy">Clear System Proxy (Root)</string>

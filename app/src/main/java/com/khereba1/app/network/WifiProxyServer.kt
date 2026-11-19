@@ -470,6 +470,47 @@ object WifiProxyServer {
 
     private fun isUpstreamUsable(): Boolean = activeUpstreamTarget() != null
 
+    /**
+     * Blocking report (call from a background thread) of how THIS device reaches the internet:
+     * all networks, which one the proxy would use, and real TCP connection tests through it.
+     * Run it on the host (broadcasting) device.
+     */
+    fun diagnoseInternet(context: Context): String {
+        if (appContext == null) appContext = context.applicationContext
+        val sb = StringBuilder()
+        sb.appendLine("Router running: ${running.get()}")
+        try {
+            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            @Suppress("DEPRECATION")
+            for (n in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(n)
+                val lp = cm.getLinkProperties(n)
+                val transports = StringBuilder()
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) transports.append("WIFI ")
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) transports.append("CELL ")
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true) transports.append("ETH ")
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) transports.append("VPN ")
+                val internet = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                val validated = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+                sb.appendLine("net $n if=${lp?.interfaceName} ${transports.toString().trim()} internet=$internet validated=$validated")
+            }
+        } catch (e: Throwable) {
+            sb.appendLine("Network list failed: ${e.message}")
+        }
+        val up = activeUpstreamTarget()
+        sb.appendLine("upstream=${if (up != null) "${up.first}:${up.second}" else "none"} systemVpn=${hasActiveSystemVpn()} chosen=${activeInternetNetwork()}")
+        for ((h, p) in listOf("1.1.1.1" to 443, "8.8.8.8" to 53)) {
+            val t0 = System.currentTimeMillis()
+            val res = try {
+                openInternetSocket(h, p).use { "OK" }
+            } catch (e: Throwable) {
+                "FAIL ${e.javaClass.simpleName}: ${e.message}"
+            }
+            sb.appendLine("TCP $h:$p -> $res (${System.currentTimeMillis() - t0} ms)")
+        }
+        return sb.toString().trim()
+    }
+
     private fun hasActiveSystemVpn(): Boolean {
         val ctx = appContext ?: return false
         return try {

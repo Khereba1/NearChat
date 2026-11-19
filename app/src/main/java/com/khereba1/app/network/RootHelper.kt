@@ -9,52 +9,141 @@ data class RootStatus(
     val checked: Boolean = false,
     val hasSuBinary: Boolean = false,
     val rootGranted: Boolean = false,
-    val detail: String = ""
+    val detail: String = "",
+    val suPath: String = ""
 )
 
 object RootHelper {
-    private val suPaths = listOf(
+    // Magisk / KernelSU / APatch / SuperSU keep su in different places and often hide it from
+    // File.exists() checks, so the only reliable test is to actually try to run it.
+    private val suCandidates = listOf(
+        "su",
         "/system/bin/su",
         "/system/xbin/su",
         "/sbin/su",
         "/su/bin/su",
         "/vendor/bin/su",
-        "/data/adb/magisk",
-        "/data/adb/ksu"
+        "/product/bin/su",
+        "/debug_ramdisk/su",
+        "/data/local/xbin/su",
+        "/data/local/bin/su",
+        "/data/adb/ksu/bin/su",
+        "/data/adb/ap/bin/su"
     )
 
-    suspend fun checkRoot(): RootStatus = withContext(Dispatchers.IO) {
-        val found = suPaths.any { path ->
-            runCatching { File(path).exists() }.getOrDefault(false)
+    private val markerPaths = listOf(
+        "/data/adb/magisk",
+        "/data/adb/ksu",
+        "/data/adb/ap",
+        "/sbin/.magisk",
+        "/system/app/Superuser.apk"
+    )
+
+    @Volatile
+    private var workingSu: String = "su"
+
+    private class ProcResult(
+        val started: Boolean,
+        val exit: Int,
+        val output: String,
+        val timedOut: Boolean,
+        val error: String
+    )
+
+    private fun exec(args: List<String>, timeoutSec: Long): ProcResult {
+        val proc = try {
+            ProcessBuilder(args).redirectErrorStream(true).start()
+        } catch (e: Throwable) {
+            return ProcResult(false, -1, "", false, e.message ?: e.javaClass.simpleName)
         }
+        return try {
+            runCatching { proc.outputStream.close() }
+            val out = StringBuilder()
+            val reader = Thread {
+                runCatching {
+                    proc.inputStream.bufferedReader().forEachLine { out.appendLine(it) }
+                }
+            }
+            reader.isDaemon = true
+            reader.start()
+            val finished = proc.waitFor(timeoutSec, TimeUnit.SECONDS)
+            if (!finished) {
+                proc.destroyForcibly()
+                reader.join(500)
+                ProcResult(true, -1, out.toString().trim(), true, "timeout")
+            } else {
+                reader.join(1000)
+                ProcResult(true, proc.exitValue(), out.toString().trim(), false, "")
+            }
+        } catch (e: Throwable) {
+            runCatching { proc.destroyForcibly() }
+            ProcResult(true, -1, "", false, e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /** Passive check: looks for su without asking for permission (no prompt is shown). */
+    suspend fun checkRoot(): RootStatus = withContext(Dispatchers.IO) {
+        val markers = markerPaths.filter { runCatching { File(it).exists() }.getOrDefault(false) }
+        val fileHit = suCandidates.drop(1).firstOrNull { runCatching { File(it).exists() }.getOrDefault(false) }
+        val which = exec(listOf("sh", "-c", "command -v su"), 3)
+        val whichPath = if (which.started && which.exit == 0) {
+            which.output.lines().firstOrNull()?.trim().orEmpty()
+        } else ""
+        val path = whichPath.ifEmpty { fileHit.orEmpty() }
+        val has = path.isNotEmpty() || markers.isNotEmpty()
         RootStatus(
             checked = true,
-            hasSuBinary = found,
+            hasSuBinary = has,
             rootGranted = false,
-            detail = if (found) "su binary found" else "No root binary"
+            detail = if (has) {
+                "su: ${path.ifEmpty { markers.first() }}"
+            } else {
+                "No su found in PATH or known locations. Tap verify to try anyway."
+            },
+            suPath = path
         )
     }
 
+    /**
+     * Active check: really runs `su -c id`. Waits up to 25 seconds so the user can accept the
+     * Magisk / KernelSU / APatch grant dialog. Returns a readable report of what happened.
+     */
     suspend fun requestRootAccess(): RootStatus = withContext(Dispatchers.IO) {
-        val res = runSuCommand("id")
-        res.fold(
-            onSuccess = { out ->
-                val granted = out.contains("uid=0")
-                RootStatus(
+        val report = StringBuilder()
+        var anyStarted = false
+        for (cand in suCandidates) {
+            val r = exec(listOf(cand, "-c", "id"), 25)
+            if (!r.started) {
+                continue
+            }
+            anyStarted = true
+            if (r.timedOut) {
+                report.append("$cand: no answer in 25s (approve the root request, then try again)")
+                return@withContext RootStatus(true, true, false, report.toString(), cand)
+            }
+            if (r.output.contains("uid=0")) {
+                workingSu = cand
+                return@withContext RootStatus(
                     checked = true,
                     hasSuBinary = true,
-                    rootGranted = granted,
-                    detail = out.trim().ifEmpty { if (granted) "uid=0(root)" else "Denied" }
-                )
-            },
-            onFailure = { e ->
-                RootStatus(
-                    checked = true,
-                    hasSuBinary = true,
-                    rootGranted = false,
-                    detail = e.message ?: "Root denied"
+                    rootGranted = true,
+                    detail = r.output.lines().firstOrNull { it.contains("uid=0") }?.trim().orEmpty()
+                        .ifEmpty { "uid=0(root)" },
+                    suPath = cand
                 )
             }
+            report.append("$cand: exit=${r.exit} ${r.output.take(160)}")
+            // su exists but refused; trying other binaries would only show more prompts.
+            break
+        }
+        if (!anyStarted) {
+            report.append("Could not start any su binary. Root is not installed, or this app is denied/hidden by your root manager.")
+        }
+        RootStatus(
+            checked = true,
+            hasSuBinary = anyStarted,
+            rootGranted = false,
+            detail = report.toString().trim()
         )
     }
 
@@ -77,19 +166,23 @@ object RootHelper {
         runSuCommand("sysctl -w net.ipv4.ip_forward=1")
     }
 
-    private fun runSuCommand(cmd: String): Result<String> = runCatching {
-        val proc = ProcessBuilder("su", "-c", cmd)
-            .redirectErrorStream(true)
-            .start()
-        val finished = proc.waitFor(5, TimeUnit.SECONDS)
-        if (!finished) {
-            proc.destroyForcibly()
-            error("Root command timed out")
+    private fun runSuCommand(cmd: String): Result<String> {
+        var last: ProcResult? = null
+        for (su in (listOf(workingSu) + suCandidates).distinct()) {
+            val r = exec(listOf(su, "-c", cmd), 15)
+            if (!r.started) {
+                last = r
+                continue
+            }
+            if (r.timedOut) {
+                return Result.failure(IllegalStateException("Root command timed out"))
+            }
+            if (r.exit != 0) {
+                return Result.failure(IllegalStateException(r.output.ifEmpty { "Exit code ${r.exit}" }))
+            }
+            workingSu = su
+            return Result.success(r.output.ifEmpty { "OK" })
         }
-        val output = proc.inputStream.bufferedReader().readText().trim()
-        if (proc.exitValue() != 0) {
-            error(output.ifEmpty { "Exit code ${proc.exitValue()}" })
-        }
-        output.ifEmpty { "OK" }
+        return Result.failure(IllegalStateException("su not available: ${last?.error.orEmpty()}"))
     }
 }
