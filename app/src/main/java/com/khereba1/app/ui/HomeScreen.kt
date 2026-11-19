@@ -266,7 +266,7 @@ fun HomeScreen(
             ) {
                 items(filtered, key = { it.id }) { room ->
                     val isCloudOnline = room.isCloudLinked &&
-                        discoveredHosts.containsKey(room.remoteToken?.uppercase())
+                        LanDiscovery.resolveFromMap(discoveredHosts, room.remoteToken) != null
                     ChatRowItem(
                         modifier = Modifier.animateItem(),
                         room = room,

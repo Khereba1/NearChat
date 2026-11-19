@@ -108,7 +108,7 @@ fun NetworkHubScreen(
     var selectedTab by remember { mutableIntStateOf(0) }
 
     var customPass by remember {
-        mutableStateOf(prefs.getString("router_pass", "NearChat123") ?: "NearChat123")
+        mutableStateOf(WifiProxyServer.ensureRouterPass(context))
     }
     var upstreamSocks by remember {
         mutableStateOf(prefs.getString("upstream_socks", "") ?: "")
@@ -153,6 +153,15 @@ fun NetworkHubScreen(
 
     var keepWifiGroup by remember {
         mutableStateOf(prefs.getBoolean("keep_wifi_group", false))
+    }
+    var requireProxyAuth by remember {
+        mutableStateOf(prefs.getBoolean("router_require_auth", false))
+    }
+    var useLohs by remember {
+        mutableStateOf(prefs.getBoolean("router_use_lohs", false))
+    }
+    var vpnProxyPass by remember {
+        mutableStateOf(prefs.getString("vpn_proxy_pass", "") ?: "")
     }
     var rootStatus by remember { mutableStateOf(RootStatus()) }
     var rootActionMsg by remember { mutableStateOf("") }
@@ -435,6 +444,45 @@ fun NetworkHubScreen(
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.error
                                         )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(stringResource(R.string.proxy_auth_toggle_title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                                    Text(stringResource(R.string.proxy_auth_toggle_desc), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                                Switch(
+                                                    checked = requireProxyAuth,
+                                                    onCheckedChange = {
+                                                        requireProxyAuth = it
+                                                        prefs.edit().putBoolean("router_require_auth", it).apply()
+                                                    }
+                                                )
+                                            }
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(stringResource(R.string.lohs_toggle_title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                                        Text(stringResource(R.string.lohs_toggle_desc), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    }
+                                                    Switch(
+                                                        checked = useLohs,
+                                                        onCheckedChange = {
+                                                            useLohs = it
+                                                            prefs.edit().putBoolean("router_use_lohs", it).apply()
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
                                     Button(
                                         enabled = !isVpnRunning,
@@ -751,6 +799,16 @@ fun NetworkHubScreen(
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
+                                    OutlinedTextField(
+                                        value = vpnProxyPass,
+                                        onValueChange = {
+                                            vpnProxyPass = it
+                                            prefs.edit().putString("vpn_proxy_pass", it).apply()
+                                        },
+                                        label = { Text(stringResource(R.string.vpn_proxy_pass_optional)) },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
                                     OutlinedButton(
                                         onClick = {
                                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

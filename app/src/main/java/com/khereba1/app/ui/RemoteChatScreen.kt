@@ -83,6 +83,7 @@ import com.khereba1.app.data.ChatRoom
 import com.khereba1.app.data.LanPermission
 import com.khereba1.app.data.MessageType
 import com.khereba1.app.network.LanClient
+import com.khereba1.app.network.LanDiscovery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -111,7 +112,7 @@ fun RemoteChatScreen(
     val scope = rememberCoroutineScope()
 
     val token = room.remoteToken.orEmpty()
-    val discoveredUrl = discoveredHosts[token.uppercase()]
+    val discoveredUrl = LanDiscovery.resolveFromMap(discoveredHosts, token)
     val activeServerUrl = discoveredUrl ?: room.remoteServerUrl.orEmpty()
     val isEditor = room.remotePermission == LanPermission.EDITOR
 

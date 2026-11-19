@@ -21,6 +21,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 /**
  * Lightweight UDP Auto-Discovery on LAN / Wi-Fi Hotspot.
@@ -56,7 +57,7 @@ object LanDiscovery {
                         val payload = JSONObject()
                             .put("app", "NearChat")
                             .put("port", port)
-                            .put("tokens", JSONArray(tokens))
+                            .put("hashes", JSONArray(tokens.map { sha256Short(it) }))
                             .toString()
                             .toByteArray(StandardCharsets.UTF_8)
 
@@ -110,14 +111,14 @@ object LanDiscovery {
                         val json = JSONObject(raw)
                         if (json.optString("app") != "NearChat") continue
                         val port = json.optInt("port", 8765)
-                        val arr = json.optJSONArray("tokens") ?: continue
+                        val arr = json.optJSONArray("hashes") ?: json.optJSONArray("tokens") ?: continue
                         val url = "http://$senderIp:$port"
                         val now = System.currentTimeMillis()
                         synchronized(entries) {
                             for (i in 0 until arr.length()) {
-                                val tok = arr.optString(i).trim().uppercase()
-                                if (tok.isNotEmpty()) {
-                                    entries[tok] = Entry(url, now)
+                                val key = arr.optString(i).trim().uppercase()
+                                if (key.isNotEmpty()) {
+                                    entries[key] = Entry(url, now)
                                 }
                             }
                             emitSnapshotLocked()
@@ -144,9 +145,23 @@ object LanDiscovery {
         listenSocket = null
     }
 
+    fun sha256Short(token: String): String {
+        val clean = token.trim().uppercase()
+        val digest = MessageDigest.getInstance("SHA-256").digest(clean.toByteArray(StandardCharsets.UTF_8))
+        return digest.take(6).joinToString("") { "%02X".format(it) }
+    }
+
     fun resolveToken(token: String?): String? {
         if (token.isNullOrBlank()) return null
-        return _discoveredHosts.value[token.trim().uppercase()]
+        val clean = token.trim().uppercase()
+        val map = _discoveredHosts.value
+        return map[sha256Short(clean)] ?: map[clean]
+    }
+
+    fun resolveFromMap(map: Map<String, String>, token: String?): String? {
+        if (token.isNullOrBlank()) return null
+        val clean = token.trim().uppercase()
+        return map[sha256Short(clean)] ?: map[clean]
     }
 
     private fun pruneExpired() {

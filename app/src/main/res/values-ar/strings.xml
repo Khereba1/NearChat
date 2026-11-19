@@ -207,4 +207,9 @@
     <string name="clear_chat_cache">مسح الملفات المحمّلة</string>
     <string name="cache_cleared_toast">تم تفريغ الملفات المحمّلة</string>
     <string name="delete_chat_action">حذف الشات</string>
+    <string name="proxy_auth_toggle_title">حماية البروكسي بكلمة مرور (اختياري)</string>
+    <string name="proxy_auth_toggle_desc">يطلب كلمة مرور للبروكسي على شبكات الواي فاي العامة.</string>
+    <string name="lohs_toggle_title">هوتسبوت محلي (أندرويد 8+)</string>
+    <string name="lohs_toggle_desc">وضع بديل إذا تعذر Wi-Fi Direct (بباسورد عشوائي).</string>
+    <string name="vpn_proxy_pass_optional">كلمة مرور البروكسي (اختياري)</string>
 </resources>

@@ -211,4 +211,9 @@
     <string name="clear_chat_cache">Clear downloaded files</string>
     <string name="cache_cleared_toast">Downloaded files cleared</string>
     <string name="delete_chat_action">Delete chat</string>
+    <string name="proxy_auth_toggle_title">Proxy Password (Optional)</string>
+    <string name="proxy_auth_toggle_desc">Require username/password on public Wi-Fi.</string>
+    <string name="lohs_toggle_title">Local Only Hotspot (Android 8+)</string>
+    <string name="lohs_toggle_desc">Fallback mode if Wi-Fi Direct fails (random password).</string>
+    <string name="vpn_proxy_pass_optional">Proxy password (optional)</string>
 </resources>

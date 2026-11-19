@@ -1226,10 +1226,10 @@ private fun QuickShareSessionCard(
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(true) }
     val port = if (lanState.port > 0) lanState.port else 8765
-    val hostIp = remember(lanState.baseUrl, routerState.isRunning, routerState.p2pSsid) {
+    val hostIp = remember(lanState.baseUrl, routerState.isRunning, routerState.proxyHost, routerState.p2pSsid) {
         when {
-            routerState.isRunning && routerState.p2pSsid.isNotBlank() -> "192.168.49.1"
-            else -> NetworkUtils.getLocalIpAddress() ?: "192.168.43.1"
+            routerState.isRunning && routerState.proxyHost.isNotBlank() -> routerState.proxyHost
+            else -> NetworkUtils.findHotspotIp()
         }
     }
     val chatUrl = "http://$hostIp:$port/c/${room.editorToken}"

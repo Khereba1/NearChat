@@ -150,6 +150,11 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
             sendJson(out, 400, JSONObject().put("error", "Empty file"))
             return
         }
+        val maxUploadBytes = 5L * 1024L * 1024L * 1024L
+        if (contentLength > maxUploadBytes) {
+            sendJson(out, 413, JSONObject().put("error", "File exceeds 5 GB limit"))
+            return
+        }
         val rawName = headers["x-filename"] ?: "file_${System.currentTimeMillis()}"
         val fileName = URLDecoder.decode(rawName, "UTF-8")
         val mime = headers["x-mime"]

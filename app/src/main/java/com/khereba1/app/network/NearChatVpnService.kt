@@ -298,6 +298,11 @@ class NearChatVpnService : VpnService() {
             }
             tunFd = pfd
 
+            val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val socksPass = prefs.getString("vpn_proxy_pass", "")?.trim().orEmpty()
+            val authLines = if (socksPass.isNotEmpty()) {
+                "\n  username: 'nearchat'\n  password: '${socksPass.replace("'", "")}'"
+            } else ""
             val configFile = File(filesDir, "tproxy.yml")
             configFile.writeText(
                 """
@@ -307,7 +312,7 @@ class NearChatVpnService : VpnService() {
                 socks5:
                   port: $socksPort
                   address: $hostIp
-                  udp: 'udp'
+                  udp: 'udp'$authLines
                 """.trimIndent()
             )
 

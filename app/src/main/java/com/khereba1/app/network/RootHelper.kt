@@ -58,8 +58,13 @@ object RootHelper {
         )
     }
 
+    private val ipv4Regex = Regex("^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$")
+
     suspend fun applyGlobalHttpProxy(host: String, port: Int): Result<String> = withContext(Dispatchers.IO) {
         val safeHost = host.trim().ifEmpty { "192.168.49.1" }
+        if (!ipv4Regex.matches(safeHost)) {
+            return@withContext Result.failure(IllegalArgumentException("Invalid IPv4 address"))
+        }
         val safePort = port.coerceIn(1, 65535)
         runSuCommand("settings put global http_proxy $safeHost:$safePort")
     }

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Base64
 import com.khereba1.app.AppLog
 import com.khereba1.app.PREFS
 import com.khereba1.app.data.NearChatDb
@@ -49,7 +50,9 @@ data class RouterBridgeState(
     val socksPort: Int = 1080,
     val p2pSsid: String = "",
     val p2pPass: String = "",
-    val p2pError: String = ""
+    val p2pError: String = "",
+    val proxyUser: String = "",
+    val proxyPass: String = ""
 )
 
 object WifiProxyServer {
@@ -64,6 +67,20 @@ object WifiProxyServer {
     private var wifiLock: WifiManager.WifiLock? = null
     private var upstreamHost: String = ""
     private var upstreamPort: Int = 0
+    @Volatile private var requireProxyAuth: Boolean = false
+    @Volatile private var proxyAuthPass: String = ""
+    private const val PROXY_USER = "nearchat"
+
+    fun ensureRouterPass(context: Context): String {
+        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = prefs.getString("router_pass", "") ?: ""
+        if (saved.length >= 8) return saved
+        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+        val rnd = java.security.SecureRandom()
+        val generated = buildString { repeat(12) { append(chars[rnd.nextInt(chars.length)]) } }
+        prefs.edit().putString("router_pass", generated).apply()
+        return generated
+    }
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _state = MutableStateFlow(RouterBridgeState())
@@ -175,7 +192,10 @@ object WifiProxyServer {
         val ctx = context.applicationContext
         appContext = ctx
         val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val customPass = prefs.getString("router_pass", "NearChat123") ?: "NearChat123"
+        val customPass = ensureRouterPass(ctx)
+        requireProxyAuth = prefs.getBoolean("router_require_auth", false)
+        proxyAuthPass = customPass
+        val useLohs = prefs.getBoolean("router_use_lohs", false)
         val upstream = (prefs.getString("upstream_socks", "") ?: "").trim()
         if (upstream.contains(":")) {
             upstreamHost = upstream.substringBefore(":").trim()
@@ -239,7 +259,20 @@ object WifiProxyServer {
                 }
             }
 
-            try {
+            if (useLohs && LocalHotspotManager.isSupported()) {
+                LocalHotspotManager.start(ctx) { info, err ->
+                    if (info != null && info.ssid.isNotEmpty()) {
+                        _state.value = _state.value.copy(
+                            proxyHost = NetworkUtils.findHotspotIp(),
+                            p2pSsid = info.ssid,
+                            p2pPass = info.passphrase,
+                            p2pError = ""
+                        )
+                    } else {
+                        _state.value = _state.value.copy(p2pError = err)
+                    }
+                }
+            } else try {
                 val mgr = ctx.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
                 p2pManager = mgr
                 if (mgr != null) {
@@ -362,6 +395,7 @@ object WifiProxyServer {
 
     fun stop(keepGroup: Boolean = false) {
         running.set(false)
+        LocalHotspotManager.stop()
         mainHandler.removeCallbacksAndMessages(null)
         releaseLocks()
         try { serverSocket?.close() } catch (_: Throwable) {}
@@ -517,8 +551,36 @@ object WifiProxyServer {
                 val nMethods = inS.read()
                 if (nMethods <= 0) return
                 repeat(nMethods) { inS.read() }
-                outS.write(byteArrayOf(0x05, 0x00))
-                outS.flush()
+                if (requireProxyAuth) {
+                    if (!methods.contains(0x02.toByte())) {
+                        outS.write(byteArrayOf(0x05, 0xFF.toByte()))
+                        outS.flush()
+                        return
+                    }
+                    outS.write(byteArrayOf(0x05, 0x02))
+                    outS.flush()
+                    val authVer = inS.read()
+                    val uLen = inS.read()
+                    if (authVer != 0x01 || uLen <= 0) return
+                    val uBytes = ByteArray(uLen)
+                    readExact(inS, uBytes)
+                    val pLen = inS.read()
+                    if (pLen <= 0) return
+                    val pBytes = ByteArray(pLen)
+                    readExact(inS, pBytes)
+                    val uStr = String(uBytes, StandardCharsets.UTF_8)
+                    val pStr = String(pBytes, StandardCharsets.UTF_8)
+                    if (uStr != PROXY_USER || pStr != proxyAuthPass) {
+                        outS.write(byteArrayOf(0x01, 0x01))
+                        outS.flush()
+                        return
+                    }
+                    outS.write(byteArrayOf(0x01, 0x00))
+                    outS.flush()
+                } else {
+                    outS.write(byteArrayOf(0x05, 0x00))
+                    outS.flush()
+                }
 
                 val rVer = inS.read()
                 val cmd = inS.read()
@@ -753,6 +815,16 @@ object WifiProxyServer {
                 val clientIp = c.inetAddress?.hostAddress ?: "unknown"
                 touchClient(clientIp)
                 if (isClientDenied(clientIp)) return
+                if (requireProxyAuth) {
+                    val authHdr = headerLines.firstOrNull { it.lowercase().startsWith("proxy-authorization:") }
+                    val expected = "Basic " + Base64.encodeToString("$PROXY_USER:$proxyAuthPass".toByteArray(StandardCharsets.UTF_8), Base64.NO_WRAP)
+                    val provided = authHdr?.substringAfter(":")?.trim() ?: ""
+                    if (provided != expected) {
+                        outStream.write("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"NearChat\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+                        outStream.flush()
+                        return
+                    }
+                }
                 if (method == "CONNECT") {
                     val host = target.substringBefore(":")
                     val port = target.substringAfter(":", "443").toIntOrNull() ?: 443
