@@ -550,7 +550,8 @@ object WifiProxyServer {
                 if (ver != 0x05) return
                 val nMethods = inS.read()
                 if (nMethods <= 0) return
-                repeat(nMethods) { inS.read() }
+                val methods = ByteArray(nMethods)
+                readExact(inS, methods)
                 if (requireProxyAuth) {
                     if (!methods.contains(0x02.toByte())) {
                         outS.write(byteArrayOf(0x05, 0xFF.toByte()))
