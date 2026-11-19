@@ -452,15 +452,34 @@ object WifiProxyServer {
         }
     }
 
-    private fun isUpstreamUsable(): Boolean {
-        if (upstreamHost.isEmpty() || upstreamPort !in 1..65535) return false
-        if ((upstreamHost == "127.0.0.1" || upstreamHost == "localhost") &&
-            upstreamPort == XrayTunnelManager.LOCAL_SOCKS_PORT &&
-            !XrayTunnelManager.state.value.isRunning
-        ) {
-            return false
+    private fun activeUpstreamTarget(): Pair<String, Int>? {
+        if (XrayTunnelManager.state.value.isRunning) {
+            return "127.0.0.1" to XrayTunnelManager.LOCAL_SOCKS_PORT
         }
-        return true
+        if (upstreamHost.isNotEmpty() && upstreamPort in 1..65535) {
+            if ((upstreamHost == "127.0.0.1" || upstreamHost == "localhost") &&
+                upstreamPort == XrayTunnelManager.LOCAL_SOCKS_PORT
+            ) {
+                return null
+            }
+            return upstreamHost to upstreamPort
+        }
+        return null
+    }
+
+    private fun isUpstreamUsable(): Boolean = activeUpstreamTarget() != null
+
+    private fun hasActiveSystemVpn(): Boolean {
+        val ctx = appContext ?: return false
+        return try {
+            val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            @Suppress("DEPRECATION")
+            cm.allNetworks.any { net ->
+                cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            }
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     private fun activeInternetNetwork(): Network? {
@@ -491,18 +510,34 @@ object WifiProxyServer {
     }
 
     private fun openInternetSocket(host: String, port: Int): Socket {
-        if (isUpstreamUsable()) {
-            return openViaUpstreamSocks5(upstreamHost, upstreamPort, host, port)
+        val up = activeUpstreamTarget()
+        if (up != null) {
+            return openViaUpstreamSocks5(up.first, up.second, host, port)
+        }
+        // If a third-party VPN (e.g. NekoBox) is active on the Host Tablet, use plain Socket so it goes through the VPN
+        if (hasActiveSystemVpn()) {
+            val sock = Socket()
+            sock.connect(InetSocketAddress(host, port), 10_000)
+            tuneSocket(sock)
+            return sock
         }
         val net = activeInternetNetwork()
         val sock = if (net != null) {
             try {
-                net.socketFactory.createSocket(host, port)
-            } catch (_: Throwable) {
-                Socket(host, port)
+                val s = net.socketFactory.createSocket()
+                val resolved = runCatching { net.getAllByName(host).firstOrNull() }.getOrNull()
+                if (resolved != null) {
+                    s.connect(InetSocketAddress(resolved, port), 10_000)
+                } else {
+                    s.connect(InetSocketAddress(host, port), 10_000)
+                }
+                s
+            } catch (e: Throwable) {
+                AppLog.log("PROXY", "Bound socket failed for $host:$port (${e.message}), trying default")
+                Socket().apply { connect(InetSocketAddress(host, port), 10_000) }
             }
         } else {
-            Socket(host, port)
+            Socket().apply { connect(InetSocketAddress(host, port), 10_000) }
         }
         tuneSocket(sock)
         return sock
@@ -658,10 +693,9 @@ object WifiProxyServer {
      * Resolves a raw DNS payload over TCP (RFC 1035 2-byte length prefix) via the upstream SOCKS5
      * tunnel (sing-box) so Wi-Fi Direct hotspot clients get working DNS even when UDP is blocked.
      */
-    private fun queryDnsOverUpstreamTcp(dnsServerIp: String, queryPayload: ByteArray): ByteArray? {
-        if (!isUpstreamUsable()) return null
+    private fun queryDnsOverTcp(dnsServerIp: String, queryPayload: ByteArray): ByteArray? {
         return try {
-            openViaUpstreamSocks5(upstreamHost, upstreamPort, dnsServerIp, 53).use { s ->
+            openInternetSocket(dnsServerIp, 53).use { s ->
                 s.soTimeout = 5000
                 val out = s.getOutputStream()
                 val inp = s.getInputStream()
@@ -773,11 +807,11 @@ object WifiProxyServer {
                 val payloadLen = len - offset
                 if (payloadLen <= 0) continue
 
-                if (dstPort == 53 && isUpstreamUsable()) {
+                if (dstPort == 53) {
                     val dnsQuery = buf.copyOfRange(offset, offset + payloadLen)
                     val srcIp = dstAddr.address
                     pool?.execute {
-                        val resp = queryDnsOverUpstreamTcp("1.1.1.1", dnsQuery)
+                        val resp = queryDnsOverTcp("1.1.1.1", dnsQuery) ?: queryDnsOverTcp("8.8.8.8", dnsQuery)
                         if (resp != null && srcIp.size == 4) {
                             val wrapped = ByteArray(10 + resp.size)
                             wrapped[0] = 0; wrapped[1] = 0; wrapped[2] = 0; wrapped[3] = 0x01
