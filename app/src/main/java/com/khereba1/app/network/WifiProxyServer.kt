@@ -242,7 +242,7 @@ object WifiProxyServer {
                 while (running.get()) {
                     try {
                         val client = ss.accept()
-                        exec.execute { handleProxyClient(client) }
+                        exec.execute { runCatching { handleProxyClient(client) } }
                     } catch (_: Throwable) {
                         if (!running.get()) break
                     }
@@ -253,7 +253,7 @@ object WifiProxyServer {
                 while (running.get()) {
                     try {
                         val client = socks.accept()
-                        exec.execute { handleSocks5Client(client) }
+                        exec.execute { runCatching { handleSocks5Client(client) } }
                     } catch (_: Throwable) {
                         if (!running.get()) break
                     }
@@ -594,8 +594,8 @@ object WifiProxyServer {
     }
 
     private fun handleSocks5Client(client: Socket) {
-        client.use { c ->
-            try {
+        val c = client
+        try {
                 tuneSocket(c)
                 val inS = c.getInputStream()
                 val outS = c.getOutputStream()
@@ -677,18 +677,28 @@ object WifiProxyServer {
                 val clientIp = c.inetAddress?.hostAddress ?: "unknown"
                 touchClient(clientIp)
                 if (isClientDenied(clientIp)) return
-                openInternetSocket(host, port).use { remote ->
+                val remote = openInternetSocket(host, port)
+                try {
                     outS.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0))
                     outS.flush()
-                    val t1 = Thread { pipe(inS, remote.getOutputStream(), clientIp) }
+                    val t1 = Thread {
+                        runCatching { pipe(inS, remote.getOutputStream(), clientIp) }
+                        runCatching { remote.shutdownOutput() }
+                    }
                     t1.start()
                     pipe(remote.getInputStream(), outS, clientIp)
-                    t1.join(3000)
+                    runCatching { c.shutdownOutput() }
+                    runCatching { t1.join(3000) }
+                } finally {
+                    runCatching { remote.close() }
                 }
+            } catch (_: java.io.EOFException) {
+            } catch (_: java.net.SocketException) {
             } catch (e: Throwable) {
-                AppLog.log("PROXY", "SOCKS5 error: ${e.message}")
+                AppLog.log("PROXY", "SOCKS5 error: ${e.javaClass.simpleName}: ${e.message}")
+            } finally {
+                runCatching { c.close() }
             }
-        }
     }
 
     /**
@@ -696,8 +706,10 @@ object WifiProxyServer {
      * tunnel (sing-box) so Wi-Fi Direct hotspot clients get working DNS even when UDP is blocked.
      */
     private fun queryDnsOverTcp(dnsServerIp: String, queryPayload: ByteArray): ByteArray? {
+        var s: Socket? = null
         return try {
-            openInternetSocket(dnsServerIp, 53).use { s ->
+            s = openInternetSocket(dnsServerIp, 53)
+            run {
                 s.soTimeout = 5000
                 val out = s.getOutputStream()
                 val inp = s.getInputStream()
@@ -718,6 +730,8 @@ object WifiProxyServer {
             }
         } catch (_: Throwable) {
             null
+        } finally {
+            runCatching { s?.close() }
         }
     }
 
@@ -845,8 +859,8 @@ object WifiProxyServer {
     }
 
     private fun handleProxyClient(client: Socket) {
-        client.use { c ->
-            try {
+        val c = client
+        try {
                 tuneSocket(c)
                 val inStream = c.getInputStream()
                 val outStream = c.getOutputStream()
@@ -883,13 +897,20 @@ object WifiProxyServer {
                 if (method == "CONNECT") {
                     val host = target.substringBefore(":")
                     val port = target.substringAfter(":", "443").toIntOrNull() ?: 443
-                    openInternetSocket(host, port).use { remote ->
+                    val remote = openInternetSocket(host, port)
+                    try {
                         outStream.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
                         outStream.flush()
-                        val t1 = Thread { pipe(inStream, remote.getOutputStream(), clientIp) }
+                        val t1 = Thread {
+                            runCatching { pipe(inStream, remote.getOutputStream(), clientIp) }
+                            runCatching { remote.shutdownOutput() }
+                        }
                         t1.start()
                         pipe(remote.getInputStream(), outStream, clientIp)
-                        t1.join(3000)
+                        runCatching { c.shutdownOutput() }
+                        runCatching { t1.join(3000) }
+                    } finally {
+                        runCatching { remote.close() }
                     }
                 } else {
                     val uri = java.net.URI(target)
@@ -897,7 +918,8 @@ object WifiProxyServer {
                     val port = if (uri.port > 0) uri.port else 80
                     val path = (uri.rawPath?.ifEmpty { "/" } ?: "/") +
                         (if (uri.rawQuery != null) "?${uri.rawQuery}" else "")
-                    openInternetSocket(host, port).use { remote ->
+                    val remote = openInternetSocket(host, port)
+                    try {
                         val rOut = remote.getOutputStream()
                         rOut.write("$method $path HTTP/1.1\r\n".toByteArray(StandardCharsets.UTF_8))
                         for (h in headerLines) {
@@ -918,12 +940,17 @@ object WifiProxyServer {
                         }
                         rOut.flush()
                         pipe(remote.getInputStream(), outStream, clientIp)
+                    } finally {
+                        runCatching { remote.close() }
                     }
                 }
+            } catch (_: java.io.EOFException) {
+            } catch (_: java.net.SocketException) {
             } catch (e: Throwable) {
-                AppLog.log("PROXY", "HTTP proxy error: ${e.message}")
+                AppLog.log("PROXY", "HTTP proxy error: ${e.javaClass.simpleName}: ${e.message}")
+            } finally {
+                runCatching { c.close() }
             }
-        }
     }
 
     private fun pipe(input: InputStream, output: OutputStream, clientIp: String = "") {

@@ -48,7 +48,7 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
                 while (running.get()) {
                     try {
                         val client = ss.accept()
-                        pool.execute { handleClient(client) }
+                        pool.execute { runCatching { handleClient(client) } }
                     } catch (e: Throwable) {
                         if (running.get()) {
                             AppLog.log("LAN", "Accept error", e)
@@ -81,8 +81,8 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
     }
 
     private fun handleClient(socket: Socket) {
-        socket.use { sock ->
-            try {
+        val sock = socket
+        try {
                 sock.soTimeout = 120_000
                 sock.tcpNoDelay = true
                 runCatching { sock.sendBufferSize = 262_144 }
@@ -123,10 +123,12 @@ class LanHttpServer(private val context: Context, preferredPort: Int = 8765) {
                 }
 
                 routeRequest(method, rawPath, headers, bodyBytes, output)
+            } catch (_: java.net.SocketException) {
             } catch (e: Throwable) {
                 AppLog.log("LAN", "Client handling error", e)
+            } finally {
+                runCatching { sock.close() }
             }
-        }
     }
 
     private fun handleStreamingUpload(
