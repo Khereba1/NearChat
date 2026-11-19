@@ -307,7 +307,10 @@ class NearChatVpnService : VpnService() {
                 // Do NOT pass an unvalidated "No internet" Wi-Fi to setUnderlyingNetworks, or Android marks VPN offline!
                 val wifiNet = findWifiNetwork(cm)
                 if (wifiNet != null) {
-                    runCatching { cm?.bindProcessToNetwork(wifiNet) }
+                    val bound = runCatching { cm?.bindProcessToNetwork(wifiNet) }.getOrNull()
+                    AppLog.log("VPN", "Bound process to Wi-Fi network $wifiNet -> $bound")
+                } else {
+                    AppLog.log("VPN", "No non-VPN Wi-Fi network found to bind (host $hostIp)")
                 }
             } else {
                 val phys = PhysicalNetwork.current(this)

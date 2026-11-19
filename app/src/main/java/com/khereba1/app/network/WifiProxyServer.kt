@@ -510,19 +510,31 @@ object WifiProxyServer {
         }
     }
 
+    @Volatile private var lastRouteLog: String = ""
+
+    private fun logRoute(route: String) {
+        if (route != lastRouteLog) {
+            lastRouteLog = route
+            AppLog.log("PROXY", "Outbound route: $route")
+        }
+    }
+
     private fun openInternetSocket(host: String, port: Int): Socket {
         val up = activeUpstreamTarget()
         if (up != null) {
+            logRoute("upstream SOCKS ${up.first}:${up.second}")
             return openViaUpstreamSocks5(up.first, up.second, host, port)
         }
         // If a third-party VPN (e.g. NekoBox) is active on the Host Tablet, use plain Socket so it goes through the VPN
         if (hasActiveSystemVpn()) {
+            logRoute("system VPN (plain socket)")
             val sock = Socket()
             sock.connect(InetSocketAddress(host, port), 10_000)
             tuneSocket(sock)
             return sock
         }
         val net = activeInternetNetwork()
+        logRoute(if (net != null) "physical network $net" else "default route (no network found)")
         val sock = if (net != null) {
             try {
                 val s = net.socketFactory.createSocket()
@@ -693,6 +705,8 @@ object WifiProxyServer {
                     runCatching { remote.close() }
                 }
             } catch (_: java.io.EOFException) {
+            } catch (e: java.net.ConnectException) {
+                AppLog.log("PROXY", "SOCKS5 connect failed: ${e.message}")
             } catch (_: java.net.SocketException) {
             } catch (e: Throwable) {
                 AppLog.log("PROXY", "SOCKS5 error: ${e.javaClass.simpleName}: ${e.message}")
@@ -823,7 +837,9 @@ object WifiProxyServer {
                 val payloadLen = len - offset
                 if (payloadLen <= 0) continue
 
-                if (dstPort == 53) {
+                // DNS-over-TCP is only needed when traffic goes through an upstream SOCKS (Xray), which has no UDP.
+                // For a direct connection keep plain UDP DNS (works everywhere, TCP/53 is filtered on some networks).
+                if (dstPort == 53 && activeUpstreamTarget() != null) {
                     val dnsQuery = buf.copyOfRange(offset, offset + payloadLen)
                     val srcIp = dstAddr.address
                     pool?.execute {
